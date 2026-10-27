@@ -38,7 +38,11 @@ DEFAULT_GITHUB_STATUSES = [
 ]
 
 # 預設忽略規則：(pattern, boolean 值 1=是/with, description)
+# ⚠️ version.db 本身被 .gitignore 排除（*.db），所以呢個 list 就係
+#    重建 .gitignore 嘅**唯一真實來源** —— 加規則一定要同時加落呢度，
+#    否則 DB 重建後規則會消失（安全漏洞）。
 DEFAULT_GITHUB_IGNORES = [
+    # --- 資料庫 / 備份 / 暫存 ---
     ("*.db", 1, "SQLite 資料庫（由 code 重建）"),
     ("*.db-journal", 1, "SQLite journal"),
     ("*.db-wal", 1, "SQLite WAL"),
@@ -46,13 +50,27 @@ DEFAULT_GITHUB_IGNORES = [
     ("*.bak*", 1, "備份檔"),
     ("*_tmp/", 1, "臨時目錄"),
     ("_purge_tmp/", 1, "臨時清理目錄"),
+    # --- Python 產物 ---
     ("__pycache__/", 1, "Python bytecode cache"),
     ("*.py[cod]", 1, "Python 編譯檔"),
     ("*.pyo", 1, "Python 優化位元碼"),
     ("*.pyd", 1, "Python DLL"),
+    # --- 虛擬環境 ---
     (".venv/", 1, "虛擬環境"),
     ("venv/", 1, "虛擬環境"),
     ("env/", 1, "虛擬環境"),
+    # --- 憑證（絕對唔可以上 GitHub）---
+    ("secret.env", 1, "憑證檔（token / 密碼）——一定唔可以上"),
+    ("secret.txt", 1, "憑證檔（token / 密碼）——一定唔可以上"),
+    ("secret.*", 1, "憑證檔（任何 secret.* 變體）"),
+    (".env", 1, "環境變數（可能含憑證）"),
+    (".env.*", 1, "環境變數變體"),
+    ("*.env", 1, "環境變數檔"),
+    ("*.pem", 1, "私鑰"),
+    ("*.key", 1, "私鑰"),
+    ("*.token", 1, "token 檔"),
+    ("*_token*", 1, "token 檔"),
+    ("*_secret*", 1, "secret 檔"),
 ]
 
 
