@@ -47,3 +47,11 @@ secret.env
 *_token*
 # ---- secret 檔 ----
 *_secret*
+# ---- 憑證檔（token / 密碼）——一定唔可以上 ----
+secret.txt
+# ---- 憑證檔（任何 secret.* 變體） ----
+secret.*
+# ---- 環境變數檔 ----
+*.env
+# ---- token 檔 ----
+*.token
