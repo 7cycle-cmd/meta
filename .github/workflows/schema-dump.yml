@@ -1,0 +1,38 @@
+name: schema-dump
+
+# 每次 push 到 main -> 自動 dump 所有 DB 表結構 -> commit 返 repo
+# 效果：GitHub 有齊所有表設計 backup + diff + history（免費）
+# 冇變化 -> 唔 commit（避免無限 loop）
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dump all DB schemas
+        run: python tools/dump_schema.py "$GITHUB_WORKSPACE"
+
+      - name: Commit schema dump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add schema_dump/
+          if git diff --cached --quiet; then
+            echo "schema 冇變，唔使 commit"
+          else
+            git commit -m "chore: 自動更新 schema dump"
+            git push
+          fi
