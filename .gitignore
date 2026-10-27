@@ -1,0 +1,49 @@
+# ============================================================
+# .gitignore — 由 version/github_ignore 表權威定義（唔好手改）
+# 表：version.db :: github_ignore（pattern + boolean_id -> boolean.id）
+#   boolean：0 = 否（唔要）/ 1 = 是（要）
+#   還原：python -m version.route gitignore
+# ============================================================
+
+# ---- SQLite 資料庫（由 code 重建） ----
+*.db
+# ---- SQLite journal ----
+*.db-journal
+# ---- SQLite WAL ----
+*.db-wal
+# ---- SQLite shared memory ----
+*.db-shm
+# ---- 備份檔 ----
+*.bak*
+# ---- 臨時目錄 ----
+*_tmp/
+# ---- 臨時清理目錄 ----
+_purge_tmp/
+# ---- Python bytecode cache ----
+__pycache__/
+# ---- Python 編譯檔 ----
+*.py[cod]
+# ---- Python 優化位元碼 ----
+*.pyo
+# ---- Python DLL ----
+*.pyd
+# ---- 虛擬環境 ----
+.venv/
+# ---- 虛擬環境 ----
+venv/
+# ---- 虛擬環境 ----
+env/
+# ---- 憑證檔（token / 密碼）——一定唔可以上 ----
+secret.env
+# ---- 環境變數（可能含憑證） ----
+.env
+# ---- 環境變數變體 ----
+.env.*
+# ---- 私鑰 ----
+*.pem
+# ---- 私鑰 ----
+*.key
+# ---- token 檔 ----
+*_token*
+# ---- secret 檔 ----
+*_secret*

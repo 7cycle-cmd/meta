@@ -1,0 +1,24 @@
+{
+  "servers": {
+    "python": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_hub.python_server"],
+      "cwd": "c:\\projects\\meta",
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": "c:\\projects\\meta"
+      }
+    },
+    "sql": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_hub.sql_server"],
+      "cwd": "c:\\projects\\meta",
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": "c:\\projects\\meta"
+      }
+    }
+  }
+}
