@@ -118,30 +118,9 @@ class SqlStore:
                             line_number=line, file_id=fid)
                         n["function"] += 1
                 # 3. tool（tool.db registry -> taxonomy 名）
-                try:
-                    tc = _sq.connect(r"C:\projects\meta\tool\tool.db")
-                    tc.row_factory = _sq.Row
-                    try:
-                        tx = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
-                        tx.row_factory = _sq.Row
-                        try:
-                            for r in tc.execute(
-                                    "SELECT module_id FROM registry"
-                                    " WHERE is_active = 1"):
-                                nr = tx.execute(
-                                    "SELECT meta FROM registry WHERE id = ?",
-                                    (r["module_id"],)).fetchone()
-                                name = nr["meta"] if nr else f"module_{r['module_id']}"
-                                _st.add_structure_resource(
-                                    _st.store.resource_type_id("tool"),
-                                    name, pkg_id)
-                                n["tool"] += 1
-                        finally:
-                            tx.close()
-                    finally:
-                        tc.close()
-                except Exception:
-                    pass
+                # 2026-10-28：中央 scanner（structure.scan_all）負責 tool 登記，
+                # source 唔再自己登（避免雙重）
+                n["tool"] = 0
                 print(f"[source] structure_resource 登記："
                       f"api={n['api']} schema={n['schema']}"
                       f" function={n['function']} tool={n['tool']}")
@@ -331,6 +310,49 @@ class SqlStore:
         self.conn.commit()
         return pid
 
+    def api_resource_map(self):
+        """source api ↔ structure_resource 對照（api_id <-> resource_id）
+
+        用戶要求（2026-10-28）：api_proof 證據要連返 structure_resource。
+        DB 驅動：由 structure.db 攞 source package 嘅 api 型資源。
+        返回：[{"api_id", "api", "method", "resource_id", "proven"}]
+        """
+        import sqlite3 as _sq
+        out = []
+        try:
+            sc = _sq.connect(r"C:\projects\meta\structure\structure.db")
+            sc.row_factory = _sq.Row
+            try:
+                rows = sc.execute(
+                    "SELECT sr.id AS resource_id, sr.value"
+                    " FROM structure_resource sr"
+                    " LEFT JOIN resource_type rt ON rt.id = sr.resource_type_id"
+                    " LEFT JOIN structure_module sm ON sm.id = sr.package_id"
+                    " WHERE rt.value = 'api' AND sm.module_id = ?"
+                    " AND sr.is_active = 1",
+                    (12,)).fetchall()
+                for r in rows:
+                    method, _, path = r["value"].partition(" ")
+                    api_id = self.api_by_path_method(path, method)
+                    proven = 0
+                    if api_id:
+                        p = self.conn.execute(
+                            "SELECT proven FROM api WHERE id = ?",
+                            (api_id,)).fetchone()
+                        proven = p["proven"] if p else 0
+                    out.append({
+                        "api_id": api_id,
+                        "api": path,
+                        "method": method,
+                        "resource_id": r["resource_id"],
+                        "proven": proven,
+                    })
+            finally:
+                sc.close()
+        except Exception:
+            pass
+        return out
+
     def api_proofs(self, api_id=None):
         """列出執行證據（可按 api 篩選）"""
         sql = ("SELECT ap.*, a.api, t.value AS api_type"
@@ -345,7 +367,6 @@ class SqlStore:
         return [dict(r) for r in self.conn.execute(sql, args)]
 
     def apis_with_proof(self, proven_only=False):
-        """列出 API 連證據狀態（proven 1/0 + 幾多 pass/fail）"""
         sql = ("SELECT a.id, a.api, t.value AS api_type,"
                " a.flow_id, f.flow_name, a.description, a.status_id,"
                " a.proven, a.is_active, a.created_at,"
