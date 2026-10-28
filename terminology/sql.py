@@ -386,7 +386,7 @@ class SqlStore:
         self._migrate_run_role_id()
         self._migrate_proof_flows()
         self._migrate_split_flow()
-        self._migrate_migration_flow()
+        self._migrate_migrate_audit_flow()
         self._migrate_migration_flows()
         self._seed_step_input()
         self._migrate_source_register_defaults()
@@ -558,36 +558,46 @@ class SqlStore:
         self.conn.commit()
         print("[migrate] evidence/proof/verify flow + condition + step 就緒")
 
-    def _migrate_migration_flow(self):
-        """遷移（幂等）：migration_audit flow（2026-10-28 用戶設計）
+    def _migrate_migrate_audit_flow(self):
+        """遷移（幂等）：migrate_audit flow（2026-10-28 用戶設計，10-28 晚正名）
 
+        用戶：「all start = migrate」—— flow 統一 `migrate_*` 開頭，
+        佢之前叫 migration_audit（唔合規），而家正名 migrate_audit。
+        同時跟 1 action = 1 condition 規格：
+            3 步 -> 3 conditions（migrate_audit:value / :run / :evidence）
         run_id = terminology.run —— migration 記錄一定要有真 run：
-            condition = migration（migration 記錄正確性判斷）
-            3 步（5W2H）：
-                what   -> value 存在（提交值）
-                where  -> run 記錄存在（migration_log 有 row）
-                how    -> evidence 產生咗（PASS = 有證據）
+            what   -> value 存在（提交值）
+            where  -> run 記錄存在（migration_log 有 row）
+            how    -> evidence 產生咗（PASS = 有證據）
         冪等：flow_name UNIQUE + condition.meta UNIQUE + step UNIQUE。
         """
-        # 1. condition
-        self.conn.execute(
-            "INSERT INTO condition (meta)"
-            " SELECT 'migration' WHERE NOT EXISTS"
-            " (SELECT 1 FROM condition WHERE meta = 'migration')")
+        # 1. 正名（migration_audit -> migrate_audit，冪等）
+        old = self.conn.execute(
+            "SELECT id FROM flow WHERE flow_name = 'migration_audit'"
+        ).fetchone()
+        new = self.conn.execute(
+            "SELECT id FROM flow WHERE flow_name = 'migrate_audit'").fetchone()
+        if old and not new:
+            self.conn.execute(
+                "UPDATE flow SET flow_name = 'migrate_audit'"
+                " WHERE id = ?", (old["id"],))
+            self.conn.commit()
+            self.conn.execute(
+                "DELETE FROM step WHERE flow_id = ?", (old["id"],))
+            self.conn.commit()
+            print("[migrate] migration_audit -> migrate_audit 正名")
         # 2. flow
         self.conn.execute(
             "INSERT INTO flow (flow_name)"
-            " SELECT 'migration_audit' WHERE NOT EXISTS"
-            " (SELECT 1 FROM flow WHERE flow_name = 'migration_audit')")
+            " SELECT 'migrate_audit' WHERE NOT EXISTS"
+            " (SELECT 1 FROM flow WHERE flow_name = 'migrate_audit')")
         self.conn.commit()
         frow = self.conn.execute(
-            "SELECT id FROM flow WHERE flow_name = 'migration_audit'"
+            "SELECT id FROM flow WHERE flow_name = 'migrate_audit'"
         ).fetchone()
-        crow = self.conn.execute(
-            "SELECT id FROM condition WHERE meta = 'migration'").fetchone()
-        if not frow or not crow:
+        if not frow:
             return
-        fid, cid = frow["id"], crow["id"]
+        fid = frow["id"]
         exp_true = self.conn.execute(
             "SELECT id FROM expected WHERE boolean_id = 1"
             " ORDER BY id LIMIT 1").fetchone()
@@ -598,13 +608,25 @@ class SqlStore:
         op_id = op_eq["id"] if op_eq else None
         if not exp_id or not op_id:
             return
-        # 3. 3 步（what=1 / where=2 / how=6）
-        for seq, w5 in ((1, 1), (2, 2), (3, 6)):
-            has = self.conn.execute(
-                "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
-                (fid, seq)).fetchone()
-            if has:
+        # 3. 3 步（what=1 / where=2 / how=6），每步一個 condition
+        steps_def = [
+            ("value", 1, "提交值", "value 存在（migration 值）"),
+            ("run", 2, "run 狀態", "run 記錄存在（migration_log 有 row）"),
+            ("evidence", 6, "證據", "evidence 產生（PASS = 有證據）"),
+        ]
+        for seq, (act, w5, inp, out) in enumerate(steps_def, start=1):
+            cmeta = f"migrate_audit:{act}"
+            self.conn.execute(
+                "INSERT INTO condition (meta)"
+                " SELECT ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM condition WHERE meta = ?)",
+                (cmeta, cmeta))
+            crow = self.conn.execute(
+                "SELECT id FROM condition WHERE meta = ?",
+                (cmeta,)).fetchone()
+            if not crow:
                 continue
+            cid = crow["id"]
             qrow = self.conn.execute(
                 "SELECT id FROM question WHERE condition_id = ?"
                 ' AND "5w2h_id" = ? AND expected_id = ?',
@@ -628,13 +650,23 @@ class SqlStore:
                     qid = qr["id"] if qr else None
             if not qid:
                 continue
+            has = self.conn.execute(
+                "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
+                (fid, seq)).fetchone()
+            if has:
+                self.conn.execute(
+                    "UPDATE step SET action = ?, input_desc = ?,"
+                    "  output_desc = ? WHERE flow_id = ? AND seq_id = ?",
+                    (act, inp, out, fid, seq))
+                continue
             self.conn.execute(
-                "INSERT INTO step (flow_id, question_id, seq_id)"
-                " SELECT ?, ?, ? WHERE NOT EXISTS"
+                "INSERT INTO step (flow_id, question_id, seq_id,"
+                "  action, input_desc, output_desc)"
+                " SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?)",
-                (fid, qid, seq, fid, seq))
+                (fid, qid, seq, act, inp, out, fid, seq))
         self.conn.commit()
-        print("[migrate] migration_audit flow + condition + step 就緒")
+        print("[migrate] migrate_audit flow + 3 conditions + steps 就緒")
 
     def _migrate_split_flow(self):
         """遷移（幂等）：split_value flow + 7 步（5W2H，2026-10-28 用戶要求）

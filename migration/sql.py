@@ -243,7 +243,7 @@ class SqlStore:
             run_id = terminology.run —— migration 一定要有真 run；
             value -> condition + operator + expected -> evidence。
 
-        只跑 migration_audit flow（唔跑 source_register —— 會開 Source
+        只跑 migrate_audit flow（唔跑 source_register —— 會開 Source
         -> Source init 又 record -> 無窮遞歸）。
         返回 run.id（失敗 -> None，log 仍然寫但 run_id=NULL）
         """
@@ -251,7 +251,7 @@ class SqlStore:
             from terminology.api import Terminology
             t = Terminology()
             try:
-                res = t.run_flow("migration_audit", value=value,
+                res = t.run_flow("migrate_audit", value=value,
                                  value_id=value_id, save=True)
                 return res.get("run_id")
             finally:
