@@ -109,6 +109,26 @@ class Programming:
         """列出 SQL 語句類型（DDL / DML）"""
         return self.store.sql_types(active_only)
 
+    # ---------- formula_type / file_line_type（2026-10-28 用戶設計）----------
+    def formula_types(self, language_id=None, active_only=True):
+        """列出 formula_type 字典（python×function / SQL×select ...）"""
+        return self.store.formula_types(language_id, active_only)
+
+    def add_file_line_type(self, file_id, start_line, end_line,
+                           language_id, formula_type_id, function_id=None):
+        """登記一個檔案行範圍分段（冪等）"""
+        return self.store.add_file_line_type(
+            file_id, start_line, end_line, language_id, formula_type_id,
+            function_id)
+
+    def file_line_types(self, file_id=None, active_only=True):
+        """列出檔案行範圍分段（可按檔案篩選）"""
+        return self.store.file_line_types(file_id, active_only)
+
+    def line_lookup(self, file_id, line_number):
+        """俾一行行號，搵返呢行屬於邊個分段（formula_type）"""
+        return self.store.line_lookup(file_id, line_number)
+
     # ---------- Python 語法字典（2026-10-27 用戶設計：官方 sample = evidence） ----------
     def python_asts(self, active_only=True):
         """列出 Python AST 節點字典（docs.python.org 官方可證明）"""

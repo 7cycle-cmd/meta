@@ -26,6 +26,7 @@ class SqlStore:
         self._seed_sql_types()
         self._seed_python_syntax()
         self._seed_structure_types()
+        self._seed_formula_types()
         # 2026-10-27：全量官方語法/語句 seed（source_proof 證明）
         self._seed_python_operator()
         self._seed_sql_statements()
@@ -53,6 +54,82 @@ class SqlStore:
         sql += " ORDER BY id"
         return [dict(r) for r in self.conn.execute(sql)]
 
+    # ---------- formula_type / file_line_type（2026-10-28 用戶設計）----------
+    # 檔案分段：「第幾行到第幾行係咩 formula 類型」
+    #   e.g. line 501-1000 = SQL * select / line 1301-1330 = python * function A
+
+    def formula_types(self, language_id=None, active_only=True):
+        """列出 formula_type 字典（可按語言篩選）"""
+        sql = ("SELECT ft.*, pl.meta AS language"
+               " FROM formula_type ft"
+               " LEFT JOIN programming_language pl ON pl.id = ft.language_id")
+        args = []
+        if active_only:
+            sql += " WHERE ft.is_active = 1"
+        if language_id:
+            sql += " AND ft.language_id = ?"
+            args.append(language_id)
+        sql += " ORDER BY ft.language_id, ft.id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def formula_type_id(self, language_id, meta):
+        """formula_type.id by language + meta"""
+        r = self.conn.execute(
+            "SELECT id FROM formula_type WHERE language_id = ? AND meta = ?",
+            (language_id, meta)).fetchone()
+        return r["id"] if r else None
+
+    def add_file_line_type(self, file_id, start_line, end_line,
+                           language_id, formula_type_id, function_id=None):
+        """登記一個檔案行範圍分段（冪等：UNIQUE file_id+start+end）"""
+        self.conn.execute(
+            "INSERT INTO file_line_type"
+            " (file_id, start_line, end_line, language_id,"
+            "  formula_type_id, function_id)"
+            " SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM file_line_type"
+            "  WHERE file_id = ? AND start_line = ? AND end_line = ?)",
+            (file_id, start_line, end_line, language_id, formula_type_id,
+             function_id, file_id, start_line, end_line))
+        self.conn.commit()
+        r = self.conn.execute(
+            "SELECT id FROM file_line_type"
+            " WHERE file_id = ? AND start_line = ? AND end_line = ?",
+            (file_id, start_line, end_line)).fetchone()
+        return r["id"] if r else None
+
+    def file_line_types(self, file_id=None, active_only=True):
+        """列出檔案行範圍分段（可按檔案篩選）"""
+        sql = ("SELECT flt.*, pl.meta AS language, ft.meta AS formula_type,"
+               " f.file_name, f.module_id"
+               " FROM file_line_type flt"
+               " LEFT JOIN programming_language pl ON pl.id = flt.language_id"
+               " LEFT JOIN formula_type ft ON ft.id = flt.formula_type_id"
+               " LEFT JOIN file f ON f.id = flt.file_id")
+        args = []
+        if active_only:
+            sql += " WHERE flt.is_active = 1"
+        if file_id:
+            sql += " AND flt.file_id = ?"
+            args.append(file_id)
+        sql += " ORDER BY flt.file_id, flt.start_line"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def line_lookup(self, file_id, line_number):
+        """俾一行行號，搵返呢行屬於邊個分段（formula_type）
+
+        用途：scanner 定位 —— line 1305 -> python * function / line 700 -> SQL * select
+        """
+        return self.conn.execute(
+            "SELECT flt.*, ft.meta AS formula_type, pl.meta AS language"
+            " FROM file_line_type flt"
+            " LEFT JOIN formula_type ft ON ft.id = flt.formula_type_id"
+            " LEFT JOIN programming_language pl ON pl.id = flt.language_id"
+            " WHERE flt.file_id = ? AND flt.is_active = 1"
+            "   AND flt.start_line <= ? AND flt.end_line >= ?"
+            " ORDER BY flt.start_line LIMIT 1",
+            (file_id, line_number, line_number)).fetchone()
+
     def _seed_sql_types(self):
         """確保 sql_type 表有齊 DDL / DML（冪等）"""
         for val, desc in _schema.DEFAULT_SQL_TYPES:
@@ -61,6 +138,17 @@ class SqlStore:
                 " SELECT ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM sql_type WHERE value = ?)",
                 (val, desc, val))
+        self.conn.commit()
+
+    def _seed_formula_types(self):
+        """確保 formula_type 表有齊（python×definition/function/api/rest_api、SQL×select/update/insert...）"""
+        for lang_id, meta, desc in _schema.DEFAULT_FORMULA_TYPES:
+            self.conn.execute(
+                "INSERT INTO formula_type (language_id, meta, description)"
+                " SELECT ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM formula_type WHERE language_id = ?"
+                "  AND meta = ?)",
+                (lang_id, meta, desc, lang_id, meta))
         self.conn.commit()
 
     def _seed_python_syntax(self):

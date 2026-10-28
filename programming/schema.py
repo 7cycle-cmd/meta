@@ -223,6 +223,74 @@ CREATE TABLE IF NOT EXISTS proof_line_ast (
 );
 """
 
+# ============ file_line_type / formula_type（2026-10-28 用戶設計）============
+# 目的：將一個檔案分段 — 「第幾行到第幾行係咩 formula 類型」。
+#   file A（1500 行）
+#     line 500        = python * definition
+#     line 501-1000   = SQL * select
+#     line 1001-1200  = SQL * update
+#     line 1201-1300  = SQL * insert
+#     line 1301-1330  = python * function A
+#     line 1331-1380  = python * function B
+#     line 1401-1450  = python * api
+#     line 1451-1500  = python * rest_api
+
+# formula_type 表：公式/語句類型字典
+# 一行 = 一個「language × 類型」組合，例如：
+#   python * definition / python * function / python * api / python * rest_api
+#   SQL * select / SQL * update / SQL * insert / SQL * delete
+FORMULA_TYPE_DDL = """
+CREATE TABLE IF NOT EXISTS formula_type (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    language_id INTEGER NOT NULL,          -- programming_language.id（1=python 2=SQL）
+    meta        TEXT    NOT NULL,          -- definition / select / update / function / api...
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (language_id, meta)
+);
+"""
+
+# formula_type 預設種子（冪等）：用戶例子 2026-10-28
+# language_id：1=python，25=sql（programming_language 真實 id）
+DEFAULT_FORMULA_TYPES = [
+    (1, "definition", "python 定義（decorator / class / 常量）"),
+    (1, "function", "python 函數"),
+    (1, "api", "python API 方法"),
+    (1, "rest_api", "python REST endpoint"),
+    (1, "formula", "python formula（@formula_def）"),
+    (25, "select", "SQL SELECT 查詢"),
+    (25, "update", "SQL UPDATE 更新"),
+    (25, "insert", "SQL INSERT 寫入"),
+    (25, "delete", "SQL DELETE 刪除"),
+    (25, "create", "SQL CREATE 建表"),
+    (25, "alter", "SQL ALTER 修改"),
+]
+
+# file_line_type 表：檔案行範圍分段（一行 = 一個連續範圍）
+#   file_id      = programming.file.id（屬邊個檔案）
+#   start_line   = 開始行號（含）
+#   end_line     = 結束行號（含）
+#   language_id  = programming_language.id（語言）
+#   formula_type_id = formula_type.id（呢段係咩類型）
+#   function_id  = ast.db function.id（可選；function 專屬段）
+# 用途：scanner — 知道一個檔案邊段係咩（SQL select / python api...），
+#       line_number 定位 -> 搵到 formula_type 歸屬。
+FILE_LINE_TYPE_DDL = """
+CREATE TABLE IF NOT EXISTS file_line_type (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id          INTEGER NOT NULL,     -- programming.file.id
+    start_line       INTEGER NOT NULL,     -- 開始行（含）
+    end_line         INTEGER NOT NULL,     -- 結束行（含）
+    language_id      INTEGER NOT NULL,     -- programming_language.id
+    formula_type_id  INTEGER NOT NULL,     -- formula_type.id
+    function_id      INTEGER,              -- ast.db function.id（可選）
+    is_active        BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (file_id, start_line, end_line)
+);
+"""
+
 # ============ 欄位值域（db_field_value，2026-10-26 用戶要求）============
 # 每個「真表欄位」（structure.db structure_db_field）適用嘅值域檢查
 # （structure.db db_field_check）一行。資料由「真實 db_field」
@@ -519,4 +587,6 @@ __all__ = ["PROGRAMMING_LANGUAGE_DDL", "LANGUAGE_ALIAS_DDL",
            "PYTHON_ALLOWED_DDL",
            "SQL_TYPE_DDL", "DEFAULT_SQL_TYPES", "EVIDENCE_AST_DDL",
            "EVIDENCE_DECORATORS_DDL", "EVIDENCE_SQL_DDL",
-           "PROGRAMMING_EVIDENCE_DDL"]
+           "PROGRAMMING_EVIDENCE_DDL",
+           "FORMULA_TYPE_DDL", "DEFAULT_FORMULA_TYPES",
+           "FILE_LINE_TYPE_DDL"]
