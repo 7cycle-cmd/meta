@@ -182,6 +182,34 @@ class Terminology:
         """測量：每條 flow 嘅輸出完整度"""
         return self.store.output_completeness(flow_name)
 
+    # ---------- output_by / output_type / hardcode_value（2026-10-28）----------
+
+    def output_types(self, active_only=True):
+        """列出 output_type（code / db_table）"""
+        return self.store.output_types(active_only)
+
+    def set_output_by(self, output_id, output_type_meta):
+        """記錄一個 output 嘅來源方式（code / db_table，冪等）"""
+        return self.store.set_output_by(output_id, output_type_meta)
+
+    def output_bys(self, output_type_meta=None):
+        """列出 output_by（可按來源方式篩選）"""
+        return self.store.output_bys(output_type_meta)
+
+    def add_hardcode_value(self, value_id, package_id=None, file_id=None,
+                           taxonomy_id=None, skill_id=None):
+        """標記一個硬編碼值（冇 db_table/db_field 出處）"""
+        return self.store.add_hardcode_value(
+            value_id, package_id, file_id, taxonomy_id, skill_id)
+
+    def hardcode_values(self, active_only=True):
+        """列出硬編碼值"""
+        return self.store.hardcode_values(active_only)
+
+    def hardcode_monitor(self):
+        """監控：全站硬編碼值統計"""
+        return self.store.hardcode_monitor()
+
     # ---------- flow_branch / next_flow（分支決策，0 hardcode） ----------
 
     def add_branch_rule(self, flow_name, condition_meta, status_id,

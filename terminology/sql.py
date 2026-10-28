@@ -82,6 +82,7 @@ class SqlStore:
             CONDITION_DDL, W5H2_DDL, RUN_DDL, FLOW_DDL, STEP_DDL,
             STEP_INPUT_DDL,
             EXPECTED_SOURCE_DDL, STEP_OUTPUT_DDL,
+            OUTPUT_TYPE_DDL, OUTPUT_BY_DDL, HARDCODE_VALUE_DDL,
             FLOW_BRANCH_DDL, NEXT_FLOW_DDL,
             EXPECTED_DDL, OPERATOR_DDL, ANSWER_DDL, BOOLEAN_DDL,
             QUESTION_DDL, SEQ_DDL, STATUS_DDL,
@@ -676,6 +677,104 @@ class SqlStore:
             })
         return {"flows": out}
 
+    # ---------- output_by / output_type / hardcode_value（2026-10-28 用戶設計）----------
+    # 分辨「設計 by code 定 by table」：
+    #   db_field_check / db_field_option（structure.db）已標明
+    #   id 來源 = 邊張 db_table 邊個 db_field。
+    #   未經呢條路（寫死值）= hardcode -> hardcode_value 表記錄。
+
+    def output_types(self, active_only=True):
+        """列出 output_type（code / db_table）"""
+        sql = "SELECT * FROM output_type"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    def output_type_id(self, meta):
+        """output_type.id by meta（code / db_table）"""
+        r = self.conn.execute(
+            "SELECT id FROM output_type WHERE meta = ?", (meta,)).fetchone()
+        return r["id"] if r else None
+
+    def set_output_by(self, output_id, output_type_meta):
+        """記錄一個 output 嘅來源方式（code / db_table，冪等）"""
+        tid = self.output_type_id(output_type_meta)
+        if not tid:
+            raise ValueError(f"output_type 唔存在: {output_type_meta!r}")
+        self.conn.execute(
+            "INSERT INTO output_by (output_id, output_type_id)"
+            " SELECT ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM output_by WHERE output_id = ?"
+            "  AND output_type_id = ?)",
+            (output_id, tid, output_id, tid))
+        self.conn.commit()
+        return tid
+
+    def output_bys(self, output_type_meta=None):
+        """列出 output_by（可按來源方式篩選）"""
+        sql = ("SELECT ob.*, ot.meta AS output_type, so.question_id,"
+               " so.value AS output_value, so.run_id, so.step_id"
+               " FROM output_by ob"
+               " LEFT JOIN output_type ot ON ot.id = ob.output_type_id"
+               " LEFT JOIN step_output so ON so.id = ob.output_id")
+        args = ()
+        if output_type_meta:
+            sql += " WHERE ot.meta = ?"
+            args = (output_type_meta,)
+        sql += " ORDER BY ob.id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def add_hardcode_value(self, value_id, package_id=None, file_id=None,
+                          taxonomy_id=None, skill_id=None):
+        """標記一個硬編碼值（冇 db_table/db_field 出處，冪等）"""
+        self.conn.execute(
+            "INSERT INTO hardcode_value"
+            " (value_id, package_id, file_id, taxonomy_id, skill_id)"
+            " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM hardcode_value WHERE value_id = ?"
+            "  AND package_id IS ? AND file_id IS ? AND taxonomy_id IS ?"
+            "  AND skill_id IS ?)",
+            (value_id, package_id, file_id, taxonomy_id, skill_id,
+             value_id, package_id, file_id, taxonomy_id, skill_id))
+        self.conn.commit()
+        # 攞返 id（剛插入或已有）
+        r = self.conn.execute(
+            "SELECT id FROM hardcode_value WHERE value_id = ?"
+            " AND package_id IS ? AND file_id IS ?"
+            " AND taxonomy_id IS ? AND skill_id IS ?",
+            (value_id, package_id, file_id, taxonomy_id, skill_id)).fetchone()
+        return r["id"] if r else None
+
+    def hardcode_values(self, active_only=True):
+        """列出硬編碼值（JOIN value db 攞值文字）"""
+        sql = ("SELECT hv.*, vdb.value AS value_text"
+               " FROM hardcode_value hv"
+               " LEFT JOIN vdb.value v ON v.id = hv.value_id")
+        if active_only:
+            sql += " WHERE hv.is_active = 1"
+        sql += " ORDER BY hv.id"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    def hardcode_monitor(self):
+        """監控：全站硬編碼值統計（by package / by skill）"""
+        # package_id / skill_id 係外站 id（taxonomy.db / skill.db），
+        # 呢度淨係統計 id 分佈（DB driven：id 就係身份，名稱由外站解）
+        by_pkg = [dict(r) for r in self.conn.execute(
+            "SELECT hv.package_id, COUNT(*) AS total"
+            " FROM hardcode_value hv"
+            " WHERE hv.is_active = 1"
+            " GROUP BY hv.package_id ORDER BY total DESC")]
+        by_skill = [dict(r) for r in self.conn.execute(
+            "SELECT hv.skill_id, COUNT(*) AS total"
+            " FROM hardcode_value hv"
+            " WHERE hv.is_active = 1"
+            " GROUP BY hv.skill_id ORDER BY total DESC")]
+        total = self.conn.execute(
+            "SELECT COUNT(*) c FROM hardcode_value WHERE is_active = 1"
+        ).fetchone()["c"]
+        return {"total": total, "by_package": by_pkg, "by_skill": by_skill}
+
     def _migrate_word_industry_evidence(self):
         """遷移（幂等）：word_industry -> 通用 evidence 表（2026-10-25）
 
@@ -1256,6 +1355,16 @@ class SqlStore:
                 " SELECT ? WHERE NOT EXISTS"
                 ' (SELECT 1 FROM "5W2H" WHERE meta = ?)',
                 (wmeta, wmeta))
+        # output_type（code / db_table，2026-10-28 用戶設計）
+        # 確保表存在（建表喺 _attach_value_db 之後先執行 _seed）
+        self.conn.execute(OUTPUT_TYPE_DDL)
+        for tmeta, desc in (("code", "由程式邏輯產生（blackbox）"),
+                            ("db_table", "由真表/欄位查詢產生（data-driven）")):
+            self.conn.execute(
+                "INSERT INTO output_type (meta, description)"
+                " SELECT ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM output_type WHERE meta = ?)",
+                (tmeta, desc, tmeta))
         self.conn.commit()
 
     def terms(self, active_only=True):

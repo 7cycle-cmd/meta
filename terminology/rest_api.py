@@ -207,6 +207,48 @@ class ApiHandler(BaseHTTPRequestHandler):
                     # 測量：每 flow 輸出完整度
                     name = qs.get("flow")
                     self._send(200, t.output_completeness(name))
+                elif path == "/output-types":
+                    # 列出來源方式（code / db_table）
+                    self._send(200, {"types": t.output_types()})
+                elif path == "/output-bys":
+                    # 列出 output 來源（可 ?output_type=code/db_table 篩選）
+                    self._send(200, {"rows": t.output_bys(
+                        qs.get("output_type"))})
+                elif path == "/set-output-by":
+                    # 設一個 output 嘅來源方式
+                    oid = qs.get("output_id")
+                    otype = qs.get("output_type")
+                    if not oid or not otype:
+                        self._send(400, {"error": "需要 ?output_id=&output_type="})
+                    else:
+                        tid = t.set_output_by(int(oid), otype)
+                        self._send(200, {"output_by": tid,
+                                         "rows": t.output_bys(otype)})
+                elif path == "/hardcode-values":
+                    # 列出硬編碼值（?active=0 連停用一齊睇）
+                    self._send(200, {"rows": t.hardcode_values(
+                        qs.get("active", "1") == "1")})
+                elif path == "/hardcode-monitor":
+                    # 監控：全站硬編碼統計
+                    self._send(200, t.hardcode_monitor())
+                elif path == "/add-hardcode":
+                    # 標記硬編碼值（?value_id=&package_id=&file_id=&taxonomy_id=&skill_id=）
+                    vid = qs.get("value_id")
+                    if not vid:
+                        self._send(400, {"error": "需要 ?value_id="})
+                    else:
+                        hid = t.add_hardcode_value(
+                            int(vid),
+                            int(qs["package_id"]) if qs.get("package_id")
+                            else None,
+                            int(qs["file_id"]) if qs.get("file_id")
+                            else None,
+                            int(qs["taxonomy_id"]) if qs.get("taxonomy_id")
+                            else None,
+                            int(qs["skill_id"]) if qs.get("skill_id")
+                            else None)
+                        self._send(200, {"hardcode_value_id": hid,
+                                         "monitor": t.hardcode_monitor()})
                 elif path == "/run":
                     name = qs.get("flow", "spec")
                     value = qs.get("value")

@@ -301,6 +301,65 @@ CREATE TABLE IF NOT EXISTS step_output (
 );
 """
 
+# ============ output_by / output_type（2026-10-28 用戶設計）============
+# 目的：分辨「設計係 by code 定 by table」—— 每個輸出（step_output）
+#       都要知道個 value 來源係 code（blackbox）定 db_table（data-driven）。
+#   output_by      = 邊個 output 由邊種方式產生
+#   output_type    = 來源方式字典
+# 已知：db_field_check / db_field_option（structure.db）已標明
+#       「id 係邊張 db_table 邊個 db_field 出嚟」。
+# 未經呢條路（直接寫死值）= hardcode -> hardcode_value 表記錄。
+
+OUTPUT_TYPE_DDL = """
+CREATE TABLE IF NOT EXISTS output_type (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    meta        TEXT    NOT NULL UNIQUE,   -- code / db_table
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# 預設 seed（冪等）：code = 由程式邏輯產生（blackbox）；
+#                     db_table = 由真表/真欄位查詢產生（data-driven）
+DEFAULT_OUTPUT_TYPES = ["code", "db_table"]
+
+OUTPUT_BY_DDL = """
+CREATE TABLE IF NOT EXISTS output_by (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    output_id      INTEGER NOT NULL,          -- step_output.id（邊個輸出）
+    output_type_id INTEGER NOT NULL,          -- output_type.id（code / db_table）
+    is_active      BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (output_id, output_type_id)
+);
+"""
+
+# hardcode_value：標記「無 db_table/db_field 出處」嘅硬編碼值（2026-10-28）
+#   value_id     = value.db value.id（個值）
+#   package_id   = taxonomy.registry.id（邊個 package 寫死）
+#   file_id      = structure.module.id（邊個實體檔案，optional）
+#   taxonomy_id  = taxonomy.registry.id（分類）
+#   skill_id     = skill.registry.id（邊個 skill）
+# 用途：
+#   - 代碼掃描（ast）見到「直接寫嘅字面值」而 db_field_check / db_field_option
+#     又冇記錄 -> 登記做 hardcode
+#   - monitor 可以查「全站有幾多 hardcode / 邊度」-> 慢慢收斂做 table-driven
+HARDCODE_VALUE_DDL = """
+CREATE TABLE IF NOT EXISTS hardcode_value (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    value_id    INTEGER NOT NULL,          -- value.db value.id（個值）
+    package_id  INTEGER,                   -- taxonomy.registry.id（package）
+    file_id     INTEGER,                   -- structure.module.id（檔案）
+    taxonomy_id INTEGER,                   -- taxonomy.registry.id（分類）
+    skill_id    INTEGER,                   -- skill.registry.id（skill）
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (value_id, package_id, file_id, taxonomy_id, skill_id)
+);
+"""
+
 # ============ 詞彙分類（word_category）============
 # 2026-10-24s（用戶要求）：每個 word 一行，多欄分類。
 # 判斷結果由 question 引擎產生（english / speech / symbol / INT / single_word），
@@ -346,6 +405,7 @@ __all__ = ["INDUSTRY_DDL", "EVIDENCE_DDL",
            "CONDITION_DDL", "W5H2_DDL", "VALUE_DDL", "RUN_DDL", "FLOW_DDL", "STEP_DDL",
            "STEP_INPUT_DDL",
            "EXPECTED_SOURCE_DDL", "STEP_OUTPUT_DDL",
+           "OUTPUT_TYPE_DDL", "OUTPUT_BY_DDL", "HARDCODE_VALUE_DDL",
            "FLOW_BRANCH_DDL", "NEXT_FLOW_DDL",
            "EXPECTED_DDL", "OPERATOR_DDL", "ANSWER_DDL", "BOOLEAN_DDL",
            "QUESTION_DDL", "SEQ_DDL", "STATUS_DDL", "REGISTRY_DDL",
