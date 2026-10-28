@@ -1,10 +1,12 @@
-"""version module：bool 值表 + 版本字典 + GitHub 操作記錄（commit / push）。
+"""version module：bool 值表 + 版本註冊表 + GitHub 操作記錄（commit / push）。
 
 用法：
     from version import Version
     v = Version()
     v.booleans()                   # yes/no 值表（0 = 否 / 1 = 是）
-    v.list()                       # 版本清單
+    v.list()                       # 註冊版本（registry JOIN value）
+    v.registries()                 # registry 原始行（id | pass_id | value_id | github_id）
+    v.values()                     # 版本值（value 表）
     v.github_actions()             # commit / push 字典
     v.github_ignores()             # .gitignore 規則（pattern + yes/no）
     v.record_commit("sess-xxx")    # 記錄一次 commit

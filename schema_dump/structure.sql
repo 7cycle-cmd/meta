@@ -1,18 +1,6 @@
 -- schema dump: structure.db
--- generated : 2026-10-27T15:47:40
--- objects   : 22（table=22）
-
--- [table] _a1
-CREATE TABLE _a1 (id INTEGER);
-
--- [table] _a2
-CREATE TABLE _a2 (id INTEGER);
-
--- [table] _probe2
-CREATE TABLE _probe2 (id INTEGER);
-
--- [table] _zz
-CREATE TABLE _zz (id INTEGER);
+-- generated : 2026-10-27T16:21:48
+-- objects   : 18（table=18）
 
 -- [table] db_field_check
 CREATE TABLE "db_field_check" (

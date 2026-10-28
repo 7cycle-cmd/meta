@@ -200,6 +200,55 @@ class Sweep:
                 found.append({"db": db_name, "table": t, "rows": 0})
         return found
 
+    # ---------------- flow（2026-10-27 用戶要求：sweep_prove） ----------------
+    def prove_flow(self, target_id):
+        """行 sweep_prove flow 證明一個 target（寫 run + evidence）
+
+        target_id = sweep target.id。
+        返回 {"run_id", "status_id", "status", "steps": [...]}
+        """
+        return self.store.prove_flow(target_id)
+
+    def flows(self, active_only=True):
+        """列出 flow（sweep_prove）"""
+        sql = "SELECT * FROM flow WHERE 1=1"
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.store.conn.execute(sql)]
+
+    def conditions(self, active_only=True):
+        """列出 condition（sweep 判斷字典）"""
+        sql = "SELECT * FROM condition WHERE 1=1"
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.store.conn.execute(sql)]
+
+    def flow_steps(self, active_only=True):
+        """列出 sweep_prove steps（JOIN condition）"""
+        sql = """SELECT s.id, s.flow_id, f.flow_name, s.condition_id,
+                        c.meta AS condition_meta, s.seq_id
+                 FROM step s
+                 JOIN flow f ON f.id = s.flow_id
+                 JOIN condition c ON c.id = s.condition_id
+                 WHERE 1=1"""
+        if active_only:
+            sql += " AND s.is_active = 1"
+        sql += " ORDER BY s.flow_id, s.seq_id"
+        return [dict(r) for r in self.store.conn.execute(sql)]
+
+    def runs(self, limit=20):
+        """列出 sweep_prove 執行記錄（證明）"""
+        return [dict(r) for r in self.store.conn.execute(
+            """SELECT r.id AS run_id, r.flow_id, f.flow_name,
+                      r.target_id, t.resource_id, r.status_id,
+                      r.step_id, r.created_at
+               FROM run r
+               LEFT JOIN flow f ON f.id = r.flow_id
+               LEFT JOIN target t ON t.id = r.target_id
+               ORDER BY r.id DESC LIMIT ?""", (limit,))]
+
     def run(self, dry_run=True, reason="殘留空表（DDL 建立咗但冇 module 用）"):
         """執行清理
 

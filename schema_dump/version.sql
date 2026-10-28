@@ -1,6 +1,6 @@
 -- schema dump: version.db
--- generated : 2026-10-27T15:47:40
--- objects   : 8（table=8）
+-- generated : 2026-10-27T16:21:48
+-- objects   : 9（table=9）
 
 -- [table] boolean
 CREATE TABLE boolean (
@@ -51,6 +51,17 @@ CREATE TABLE github_status (
     created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 
+-- [table] registry
+CREATE TABLE registry (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    pass_id     INTEGER,            -- 期望值（expected.id）
+    value_id    INTEGER,            -- 版本值（value.id）
+    github_id   INTEGER,            -- GitHub 操作記錄（github.id）
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
 -- [table] skill
 CREATE TABLE skill (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,8 +74,9 @@ CREATE TABLE skill (
 -- [table] sqlite_sequence
 CREATE TABLE sqlite_sequence(name,seq);
 
--- [table] version
-CREATE TABLE version (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    version TEXT    NOT NULL UNIQUE
+-- [table] value
+CREATE TABLE value (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    value       TEXT    NOT NULL UNIQUE,   -- 版本字串（1.4.0 / v1 ...）
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );

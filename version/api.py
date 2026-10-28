@@ -1,6 +1,7 @@
 """version 對外介面 API
 
-版本字典 + GitHub 操作記錄（commit / push）。
+版本註冊表（registry：id | pass_id | value_id | github_id）
++ GitHub 操作記錄（commit / push）。
 """
 
 from .sql import SqlStore
@@ -10,12 +11,30 @@ class Version:
     def __init__(self, db_path=None):
         self.store = SqlStore(db_path) if db_path else SqlStore()
 
-    # ---------------- version ----------------
+    # ---------------- registry（版本註冊表）----------------
     def list(self):
+        """列出註冊版本（registry JOIN value）"""
         return self.store.versions()
 
+    def registries(self):
+        """列出 registry 原始行（id | pass_id | value_id | github_id）"""
+        return self.store.registries()
+
+    def values(self):
+        """列出版本值（value 表）"""
+        return self.store.values()
+
     def add(self, version):
+        """登記一個版本（返回 registry.id）"""
         return self.store.add_version(version)
+
+    def set_github(self, registry_id, github_id):
+        """連結 registry 行 -> github 操作記錄"""
+        return self.store.set_registry_github(registry_id, github_id)
+
+    def set_pass(self, registry_id, pass_id):
+        """設定 registry 行嘅期望值（pass_id = expected.id）"""
+        return self.store.set_registry_pass(registry_id, pass_id)
 
     # ---------------- boolean（yes / no 值表）----------------
     def booleans(self):

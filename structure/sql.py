@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS structure_skill (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     structure_type_id   INTEGER NOT NULL,   -- structure_type.id（package=1）
     structure_module_id INTEGER NOT NULL,   -- structure_module.id（父，module 主行）
-    skill_id            INTEGER NOT NULL,   -- taxonomy.taxonomy.id（skill 身份）
+    skill_id            INTEGER NOT NULL,   -- skill.registry.id（skill 身份，2026-10-27）
     value               TEXT    NOT NULL,   -- skill 名
     location            TEXT,               -- 物理位置（root + folder + skill + file）
     is_active           BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS db_field_property (
 #   一行 = 一個「真表欄位」嘅完整值域
 #   structure_db_table_id  = structure.db structure_db_table.id（邊張真表）
 #   structure_db_field_id  = structure.db structure_db_field.id（邊個真欄位）
+#   db_field_type_id       = db_field_type.id（型別，2026-10-27 用戶要求）
 #   total                  = 值數量（len(json)）
 #   json                   = 該欄位喺全站真 DB 出現過嘅全部真實值
 #                             （例如 [1,2,3] / ["A","B","C","D"]）
@@ -236,6 +237,7 @@ CREATE TABLE IF NOT EXISTS db_field_check (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
     structure_db_table_id  INTEGER NOT NULL,  -- structure_db_table.id
     structure_db_field_id  INTEGER NOT NULL,  -- structure_db_field.id
+    db_field_type_id       INTEGER,           -- db_field_type.id（型別，2026-10-27）
     total                  INTEGER NOT NULL DEFAULT 0,  -- 值數量
     json                   TEXT,              -- 真實值清單（JSON 陣列）
     UNIQUE (structure_db_field_id)
@@ -422,6 +424,30 @@ CREATE TABLE IF NOT EXISTS position (
 );
 """
 
+# db_field_option 表：欄位值域定義（2026-10-27 由 option.db 搬入）
+# 一行 = 一個真表欄位嘅一個允許值。
+#    structure_db_table_id = structure.db structure_db_table.id（邊張真表）
+#    structure_db_field_id = structure.db structure_db_field.id（邊個真欄位）
+#    db_field_type_id      = db_field_type.id（型別，2026-10-27 用戶要求）
+#    value                 = 允許值（'0' / '1' / 'json' ...）
+#    description           = 描述
+# 舊 option.db table_field_option（resource_id 指 registry）已搬遷：
+#   resource_id 行（840233...）係舊假資料 -> 唔搬；只搬 structure ids 行。
+DB_FIELD_OPTION_DDL = """
+CREATE TABLE IF NOT EXISTS db_field_option (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    structure_db_table_id  INTEGER NOT NULL,  -- structure_db_table.id（真表）
+    structure_db_field_id  INTEGER NOT NULL,  -- structure_db_field.id（真欄位）
+    db_field_type_id       INTEGER,           -- db_field_type.id（型別，2026-10-27）
+    value                  TEXT    NOT NULL,  -- 允許值（'0' / '1' / ...）
+    description            TEXT,              -- 描述
+    is_active              BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at             TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at             TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (structure_db_table_id, structure_db_field_id, value)
+);
+"""
+
 # package_setting 表：package × 表（一個 package 包含邊啲真表）
 # 2026-10-23：package_setting / package_type 已移除（由 taxonomy.package 管）
 PACKAGE_SETTING_DDL = ""
@@ -519,6 +545,11 @@ class SqlStore:
         # structure_db_field_id + total + json）
         self.conn.execute(DB_FIELD_CHECK_DDL)
         self._migrate_db_field_check_refs()
+        # 2026-10-27：db_field_check / db_field_option 加 db_field_type_id 欄
+        self._migrate_option_type_id()
+        # db_field_option（2026-10-27 用戶要求：由 option.db 搬入 + 改名）
+        self.conn.execute(DB_FIELD_OPTION_DDL)
+        self._migrate_field_option_from_option()
         # 由真資料 sync（差集補缺 + 校正，唔 DELETE 全部 = 唔燒 sqlite_sequence；
         # 全站掃描好慢 -> 每 process 只跑一次）
         if not getattr(SqlStore, "_checks_synced", False):
@@ -929,6 +960,160 @@ class SqlStore:
         self.conn.commit()
         return n
 
+    def _migrate_option_type_id(self):
+        """遷移（幂等）：db_field_check / db_field_option 加 db_field_type_id（2026-10-27 用戶要求）
+
+        db_field_type_id = db_field_type.id（型別）。
+        回填：由 structure_db_field 嘅真型別推導（零 hardcode）——
+        正常情況 structure_db_field 冇直接型別（型別由 db_table_setting
+        通用模板 + resource 管），所以呢度按「真值」推導：
+            值全 0/1    -> BOOLEAN
+            值全數字    -> INTEGER
+            有字串      -> TEXT
+        匹配 db_field_property（type × format=NOT NULL）攞 type id。
+        """
+        for tbl in ("db_field_check", "db_field_option"):
+            cols = {c[1] for c in self.conn.execute(
+                "PRAGMA table_info(%s)" % tbl)}
+            if "db_field_type_id" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE %s ADD COLUMN db_field_type_id INTEGER" % tbl)
+                self.conn.commit()
+                print(f"[structure] {tbl} + db_field_type_id 欄")
+        # 回填 db_field_check（由 json 推導型別；只填 NULL）
+        import json as _json
+        n = 0
+        rows = self.conn.execute(
+            "SELECT id, json FROM db_field_check"
+            " WHERE db_field_type_id IS NULL AND json IS NOT NULL"
+            " AND json != '[]'").fetchall()
+        for r in rows:
+            try:
+                vals = _json.loads(r["json"])
+            except Exception:
+                continue
+            if not isinstance(vals, list) or not vals:
+                continue
+            tid = self._type_id_for_values(vals)
+            if tid:
+                self.conn.execute(
+                    "UPDATE db_field_check SET db_field_type_id = ?"
+                    " WHERE id = ?", (tid, r["id"]))
+                n += 1
+        self.conn.commit()
+        if n:
+            print(f"[structure] db_field_check.db_field_type_id 回填：{n} 行")
+        # 回填 db_field_option（由 structure_db_field.db_field_check_id 反查）
+        n2 = 0
+        rows = self.conn.execute(
+            "SELECT o.id, f.db_field_check_id"
+            " FROM db_field_option o"
+            " LEFT JOIN structure_db_field f ON f.id = o.structure_db_field_id"
+            " WHERE o.db_field_type_id IS NULL").fetchall()
+        for r in rows:
+            tid = None
+            if r["db_field_check_id"]:
+                ck = self.conn.execute(
+                    "SELECT db_field_type_id FROM db_field_check"
+                    " WHERE id = ?", (r["db_field_check_id"],)).fetchone()
+                tid = ck["db_field_type_id"] if ck else None
+            if tid:
+                self.conn.execute(
+                    "UPDATE db_field_option SET db_field_type_id = ?"
+                    " WHERE id = ?", (tid, r["id"]))
+                n2 += 1
+        self.conn.commit()
+        if n2:
+            print(f"[structure] db_field_option.db_field_type_id 回填：{n2} 行")
+
+    def _type_id_for_values(self, values):
+        """由真實值推導 db_field_type.id（零 hardcode）
+
+        - 全 0/1       -> BOOLEAN
+        - 全數字       -> INTEGER
+        - 有字串       -> TEXT
+        匹配 db_field_type.meta 攞 id（搵唔到返回 None）。
+        """
+        all_num = all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                      for v in values)
+        bool_like = all_num and all(v in (0, 1) for v in values)
+        if bool_like:
+            meta = "BOOLEAN"
+        elif all_num:
+            meta = "INTEGER"
+        else:
+            meta = "TEXT"
+        r = self.conn.execute(
+            "SELECT id FROM db_field_type WHERE meta = ?", (meta,)).fetchone()
+        return r["id"] if r else None
+
+    def _migrate_field_option_from_option(self):
+        """遷移（幂等）：rebuild db_field_option by real（2026-10-27 用戶要求）
+
+        option module 已刪除（2026-10-27）—— db_field_option 完全由
+        structure.db 擁有。資料權威 = db_field_check（真資料值域）：
+        每個有值域嘅真欄位（json 有值）-> 每個值一行 db_field_option。
+        收斂（鐵律 5）：db_field_check 係權威 —— 刪走唔對應任何
+        check 值嘅 option 行，再補缺（唔可以淨係 INSERT）。
+        """
+        import json as _json
+        n2 = 0
+        # 1. 權威快照：(table_id, field_id, value, type_id) 集合
+        authority = {}
+        for ck in self.conn.execute(
+                "SELECT c.structure_db_table_id, c.structure_db_field_id,"
+                " c.db_field_type_id, c.json FROM db_field_check c"
+                " WHERE c.json IS NOT NULL AND c.json != '[]'"
+                " ORDER BY c.id"):
+            try:
+                vals = _json.loads(ck["json"])
+            except Exception:
+                continue
+            if not isinstance(vals, list) or not vals:
+                continue
+            for v in vals:
+                authority[(ck["structure_db_table_id"],
+                           ck["structure_db_field_id"], str(v))] = \
+                    ck["db_field_type_id"]
+        # 2. 刪走唔喺權威嘅行（收斂）
+        rows = self.conn.execute(
+            "SELECT id, structure_db_table_id, structure_db_field_id, value"
+            " FROM db_field_option").fetchall()
+        n_del = 0
+        for r in rows:
+            if (r["structure_db_table_id"], r["structure_db_field_id"],
+                    r["value"]) not in authority:
+                self.conn.execute(
+                    "DELETE FROM db_field_option WHERE id = ?", (r["id"],))
+                n_del += 1
+        # 3. 補缺（權威值 -> option 行，帶 type）
+        for (tid, fid, v), type_id in authority.items():
+            cur = self.conn.execute(
+                "INSERT INTO db_field_option"
+                " (structure_db_table_id, structure_db_field_id,"
+                "  db_field_type_id, value)"
+                " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM db_field_option"
+                "  WHERE structure_db_table_id = ?"
+                "  AND structure_db_field_id = ? AND value = ?)",
+                (tid, fid, type_id, v, tid, fid, v))
+            n2 += cur.rowcount
+        self.conn.commit()
+        if n2 or n_del:
+            print(f"[structure] db_field_option 由真資料重建："
+                  f"+{n2} 行 / 收斂 -{n_del} 行")
+        # 3. 收斂：清走對應唔到真表/真欄位嘅假資料（rebuild by real）
+        cur = self.conn.execute(
+            "DELETE FROM db_field_option"
+            " WHERE structure_db_table_id NOT IN"
+            "   (SELECT id FROM structure_db_table)"
+            "    OR structure_db_field_id NOT IN"
+            "   (SELECT id FROM structure_db_field)")
+        self.conn.commit()
+        if cur.rowcount:
+            print(f"[structure] db_field_option 清假資料：{cur.rowcount} 行")
+        return n2
+
     def _migrate_db_field_check_refs(self):
         """遷移（幂等）：db_field_check 重建（2026-10-26 用戶 redesign）
 
@@ -979,23 +1164,27 @@ class SqlStore:
             vals = self._normalize_case(real_values)
             j = _json.dumps(vals)
             total = len(vals)
+            tid = self._type_id_for_values(vals)  # 2026-10-27：型別
             cur = self.conn.execute(
                 "INSERT INTO db_field_check"
-                " (structure_db_table_id, structure_db_field_id, total, json)"
-                " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                " (structure_db_table_id, structure_db_field_id,"
+                "  db_field_type_id, total, json)"
+                " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM db_field_check"
                 "  WHERE structure_db_field_id = ?)",
-                (r["structure_db_table_id"], r["id"], total, j, r["id"]))
+                (r["structure_db_table_id"], r["id"], tid, total, j,
+                 r["id"]))
             if cur.rowcount:
                 n += 1
             else:
                 # 已存在 -> 校正（真實值域可能變咗；用 changes diff 計）
                 before = self.conn.total_changes
                 self.conn.execute(
-                    "UPDATE db_field_check SET total = ?, json = ?"
+                    "UPDATE db_field_check SET total = ?, json = ?,"
+                    " db_field_type_id = COALESCE(?, db_field_type_id)"
                     " WHERE structure_db_field_id = ?"
                     "  AND (total != ? OR json != ?)",
-                    (total, j, r["id"], total, j))
+                    (total, j, tid, r["id"], total, j))
                 if self.conn.total_changes > before:
                     n += 1
         # 清走已停用欄位嘅 check（舊殘留）
@@ -3222,13 +3411,17 @@ class SqlStore:
             return None
         total = len(vals)
         j = json.dumps(vals) if not isinstance(json, str) else json
+        # 2026-10-27：型別由真實值推導
+        tvals = vals if isinstance(vals, list) else []
+        tid = self._type_id_for_values(tvals) if tvals else None
         # 真實值 -> total 一致
         cur = self.conn.execute(
             "INSERT INTO db_field_check"
-            " (structure_db_table_id, structure_db_field_id, total, json)"
-            " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+            " (structure_db_table_id, structure_db_field_id,"
+            "  db_field_type_id, total, json)"
+            " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
             " (SELECT 1 FROM db_field_check WHERE structure_db_field_id = ?)",
-            (r["structure_db_table_id"], db_field_stucture_id, total, j,
+            (r["structure_db_table_id"], db_field_stucture_id, tid, total, j,
              db_field_stucture_id))
         self.conn.commit()
         return cur.lastrowid if cur.rowcount else None
@@ -3288,22 +3481,17 @@ class SqlStore:
                 # 每個真欄位嘅 check -> 記低 json 允許值
                 if ck.get("structure_db_field_id"):
                     check_map[ck["structure_db_field_id"]] = ck.get("json")
-            # option 值域（option.db table_field_option，按 structure_db_field_id）
-            # 2026-10-25：option 表定義「field ABC 嘅允許值」-> 生成 CHECK
+            # option 值域（db_field_option，按 structure_db_field_id）
+            # 2026-10-27：由 option.db table_field_option 搬入 structure.db
             option_map = {}
             try:
-                import sqlite3 as _sq3
-                _oc = _sq3.connect(
-                    f"file:{r'C:\projects\meta\option\option.db'}?mode=ro", uri=True)
-                _oc.row_factory = _sq3.Row
-                for orow in _oc.execute(
+                for orow in self.conn.execute(
                         "SELECT structure_db_field_id, value"
-                        " FROM table_field_option"
+                        " FROM db_field_option"
                         " WHERE structure_db_field_id IS NOT NULL"
                         " AND is_active = 1 ORDER BY id"):
                     option_map.setdefault(
                         orow["structure_db_field_id"], []).append(orow["value"])
-                _oc.close()
             except Exception:
                 pass
             settings = []

@@ -179,6 +179,14 @@ CREATE TABLE IF NOT EXISTS token (
 );
 """
 
+# rest_api_type 表：REST API 類型字典（2026-10-27 用戶要求：放 common，all modules 共用）
+#   一行 = 一個 REST API 類型
+#   meta = 類型名：READ / WRITE
+# 2026-10-27（用戶要求）：rest_api_type 已移除
+# READ 中心 = monitor（rest_api_READ）
+# WRITE 中心 = tool（rest_api_WRITE）
+# 唔需要中央字典（READ/WRITE 由兩張表分開表達）
+
 COMMON_DDL = (ACTION_DDL + STATUS_DDL + ROLE_DDL + SEQ_DDL + BOOLEAN_DDL
               + RESOURCE_ACTION_DDL + RESOURCE_STATUS_DDL
               + SWEEP_ACTIVITY_DDL + MIGRATION_ACTIVITY_DDL
@@ -188,4 +196,5 @@ __all__ = ["ACTION_DDL", "STATUS_DDL", "ROLE_DDL", "SEQ_DDL",
            "BOOLEAN_DDL",
            "RESOURCE_ACTION_DDL",
            "RESOURCE_STATUS_DDL", "SWEEP_ACTIVITY_DDL",
-           "MIGRATION_ACTIVITY_DDL", "TOKEN_DDL", "COMMON_DDL"]
+           "MIGRATION_ACTIVITY_DDL", "TOKEN_DDL",
+           "COMMON_DDL"]

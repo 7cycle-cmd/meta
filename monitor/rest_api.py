@@ -9,6 +9,25 @@
 啟動：
     python -m monitor.rest_api --port 9520
 """
+import sys
+
+# ---- ast shadow 保衛（2026-10-27 fix）----
+# C:\projects\meta\ast\ 資料夾 shadow 咗標準庫 ast -> traceback.print_exc()
+# 內部 ast.parse() 崩潰 -> HTTP connection 被切斷（連 error JSON 都收唔到）。
+# 喺其他地方 import traceback 之前，確保 sys.modules['ast'] = 標準庫 ast。
+_ast_mod = sys.modules.get("ast")
+if _ast_mod is None or (getattr(_ast_mod, "__file__", "") or "").startswith(r"C:\projects\meta"):
+    _keep = [p for p in sys.path if p not in ("", r"C:\projects\meta")]
+    _save = sys.path[:]
+    try:
+        sys.path = _keep
+        import ast as _stdlib_ast
+        sys.modules["ast"] = _stdlib_ast
+    except Exception:
+        pass
+    finally:
+        sys.path = _save
+
 
 import json
 import sys
@@ -53,6 +72,20 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, {"current_structure": m.list_current_structure()})
             elif path == "/current-taxonomy":
                 self._send(200, {"current_taxonomy": m.list_current_taxonomy()})
+            elif path == "/rest-api-read":
+                self._send(200, {"rest_api_read": m.list_rest_api_read()})
+            elif path == "/rest-api-watch":
+                qs = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+                status = qs.get("status", [None])[0]
+                self._send(200, {"rest_api_watch": m.list_rest_api_watch(status=status)})
+            elif path == "/field-check":
+                self._send(200, {"field_check": m.list_field_check()})
+            elif path == "/sweep":
+                self._send(200, {"sweep": m.list_sweep()})
+            elif path == "/fallback":
+                self._send(200, {"fallback": m.list_fallback()})
+            elif path == "/source-register":
+                self._send(200, {"source_register": m.list_source_register()})
             else:
                 self._send(404, {"error": f"唔知 route: {path}"})
         except Exception as e:
@@ -79,6 +112,21 @@ class _Handler(BaseHTTPRequestHandler):
                 g.close()
             if path == "/refresh":
                 res = m.refresh()
+                self._send(200, {"status": "ok", "refresh": res})
+            elif path == "/refresh-rest-api-read":
+                res = m.refresh_rest_api_read()
+                self._send(200, {"status": "ok", "refresh": res})
+            elif path == "/refresh-rest-api-watch":
+                res = m.refresh_rest_api_watch()
+                self._send(200, {"status": "ok", "refresh": res})
+            elif path == "/refresh-field-check":
+                res = m.refresh_field_check()
+                self._send(200, {"status": "ok", "refresh": res})
+            elif path == "/refresh-sweep":
+                res = m.refresh_sweep()
+                self._send(200, {"status": "ok", "refresh": res})
+            elif path == "/refresh-fallback":
+                res = m.refresh_fallback()
                 self._send(200, {"status": "ok", "refresh": res})
             else:
                 self._send(404, {"error": f"唔知 route: {path}"})

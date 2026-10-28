@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS registry (
 );
 """
 
+# rest_api / rest_api_rule 表已移除（2026-10-27 用戶要求）
+# taxonomy 唔做 API 註冊 —— READ 中心 = monitor（rest_api_READ），
+# WRITE 中心 = tool（rest_api_WRITE）。
+
 # TAXONOMY_DDL 舊名 alias（2026-10-27：實際表 = registry）
 TAXONOMY_DDL = REGISTRY_DDL
 

@@ -61,6 +61,9 @@ class SqlStore:
                 self.conn.commit()
         # 2026-10-27（用戶要求）：taxonomy -> registry（rename，保資料）
         self._rename_taxonomy_to_registry()
+        # 2026-10-27（用戶要求）：rest_api / rest_api_rule 表移除
+        # taxonomy 唔做 API 註冊 —— READ 中心 = monitor，WRITE 中心 = tool
+        self._migrate_drop_rest_api_tables()
         self.conn.executescript(TREE_DDL + REGISTRY_DDL
                                 + PHYSICAL_PATH_DDL + PATH_DEFINITION_DDL)
         self.conn.commit()
@@ -68,7 +71,9 @@ class SqlStore:
         self._sync_dicts()
         if not self.tree_id("module"):
             self.insert_category("module", 2, 1)
-        for _module in ("terminology", "version", "skill"):
+        for _module in ("terminology", "version", "skill", "value",
+                        "lineage", "role", "rule", "preflight", "plan",
+                        "task", "tool"):
             self.insert_item("module", _module)
         self._rebuild_physical_paths()
 
@@ -98,6 +103,22 @@ class SqlStore:
         self.conn.execute("ALTER TABLE taxonomy RENAME TO registry")
         self.conn.commit()
         print("[taxonomy] taxonomy -> registry（rename，保資料）")
+
+    def _migrate_drop_rest_api_tables(self):
+        """遷移（幂等）：drop 舊 rest_api / rest_api_rule 表（2026-10-27）
+
+        用戶要求：taxonomy 唔做 API 註冊
+        READ 中心 = monitor（rest_api_READ）
+        WRITE 中心 = tool（rest_api_WRITE）
+        """
+        for t in ("rest_api", "rest_api_rule"):
+            has = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table'"
+                " AND name=?", (t,)).fetchone()
+            if has:
+                self.conn.execute(f"DROP TABLE {t}")
+                self.conn.commit()
+                print(f"[taxonomy] drop 舊表 {t}")
 
     def _structure_addresses(self):
         """由 structure.db 攞實體地址（3 張分層表）
@@ -485,6 +506,15 @@ class SqlStore:
         """由 tree.meta_key 攞 tree_id（唔存在返回 None）"""
         row = self.conn.execute(
             "SELECT id FROM tree WHERE meta_key = ?", (meta_key,)).fetchone()
+        return row["id"] if row else None
+
+    def registry_id(self, tree, meta):
+        """由 tree.meta_key + meta 攞 registry.id（唔存在返回 None）"""
+        row = self.conn.execute(
+            "SELECT r.id FROM registry r"
+            " JOIN tree tr ON tr.id = r.tree_id"
+            " WHERE tr.meta_key = ? AND r.meta = ?",
+            (tree, meta)).fetchone()
         return row["id"] if row else None
 
     def items(self, tree=None, active_only=True):

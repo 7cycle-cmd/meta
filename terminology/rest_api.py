@@ -221,6 +221,48 @@ class ApiHandler(BaseHTTPRequestHandler):
                     else:
                         self._send(200, t.word_proof(
                             urllib.parse.unquote(value)))
+                elif path == "/source-register":
+                    # 設定 / 列出詞 -> source 選擇（2026-10-27 表話事）
+                    word = qs.get("word")
+                    source_id = qs.get("source_id")
+                    if word and source_id:
+                        try:
+                            rid = t.set_source_for_word(
+                                urllib.parse.unquote(word),
+                                int(source_id), "api")
+                            self._send(200, {"source_register_id": rid,
+                                             "word": word,
+                                             "source_id": int(source_id),
+                                             "rows": t.source_register_rows()})
+                        except Exception as exc:
+                            self._send(400, {"error": str(exc)})
+                    else:
+                        self._send(200, {"rows": t.source_register_rows()})
+                elif path == "/get-source":
+                    # 攞一個詞用邊個 source（source_register 表話事）
+                    # 冇 word -> 後備 source
+                    word = qs.get("word")
+                    if word:
+                        self._send(200, {"word": word,
+                                         "source_id": t.get_source(
+                                             urllib.parse.unquote(word))})
+                    else:
+                        self._send(200, {"source_id": t.get_source()})
+                elif path == "/verify-source":
+                    word = qs.get("word")
+                    if not word:
+                        self._send(400, {"error": "需要 ?word="})
+                    else:
+                        self._send(200, {"word": word,
+                                         "proof": t.verify_source(
+                                             urllib.parse.unquote(word))})
+                elif path == "/proof-source":
+                    word = qs.get("word")
+                    if not word:
+                        self._send(400, {"error": "需要 ?word="})
+                    else:
+                        self._send(200, t.proof_source(
+                            urllib.parse.unquote(word)))
                 else:
                     self._send(404, {"error": f"唔知 route: {path}"})
             finally:

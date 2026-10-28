@@ -68,7 +68,23 @@ class SqlStore:
         self.conn.executescript(COMMON_DDL)
         self.conn.commit()
         self._migrate_position_to_seq()
+        self._migrate_drop_rest_api_type()
         self._seed()
+
+    def _migrate_drop_rest_api_type(self):
+        """遷移（幂等）：drop 舊 rest_api_type 表（2026-10-27 用戶要求）
+
+        READ 中心 = monitor（rest_api_READ）
+        WRITE 中心 = tool（rest_api_WRITE）
+        common 唔再需要 rest_api_type 中央字典。
+        """
+        has = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='rest_api_type'").fetchone()
+        if has:
+            self.conn.execute("DROP TABLE rest_api_type")
+            self.conn.commit()
+            print("[common] drop 舊表 rest_api_type")
 
     def _migrate_position_to_seq(self):
         """遷移（幂等）：position 表 -> seq 表（2026-10-27 用戶要求）

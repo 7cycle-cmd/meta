@@ -19,8 +19,25 @@ worker 可以透過 HTTP 用 JSON 登記 / 搜尋 taxonomy：
 import argparse
 import json
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+# ---- ast shadow 保衛（2026-10-27：同 terminology 一樣）----
+# C:\projects\meta\ast\ shadow 咗標準庫 ast -> traceback 崩潰 -> 連線斷。
+_ast_mod = sys.modules.get("ast")
+if _ast_mod is None or (getattr(_ast_mod, "__file__", "") or "").startswith(
+        r"C:\projects\meta"):
+    _keep = [p for p in sys.path if p not in ("", r"C:\projects\meta")]
+    _save = sys.path[:]
+    try:
+        sys.path = _keep
+        import ast as _stdlib_ast
+        sys.modules["ast"] = _stdlib_ast
+    except Exception:
+        pass
+    finally:
+        sys.path = _save
+
+from .api import Taxonomy
 from .sql import SqlStore
 
 
@@ -38,7 +55,19 @@ class ApiHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         if not length:
             return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        try:
+            raw = self.rfile.read(length)
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
+
+    def _qs(self):
+        """拆 query string -> dict（首個值）"""
+        if "?" not in self.path:
+            return {}
+        q = dict(p.split("=", 1) for p in
+                 self.path.split("?", 1)[1].split("&") if "=" in p)
+        return q
 
     def log_message(self, *args):
         pass
@@ -93,7 +122,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="taxonomy REST API")
     parser.add_argument("--port", type=int, default=9000)
     args = parser.parse_args(argv)
-    server = HTTPServer(("127.0.0.1", args.port), ApiHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), ApiHandler)
     print(f"✅ taxonomy API 伺服器起動: http://127.0.0.1:{args.port}")
     try:
         server.serve_forever()

@@ -70,18 +70,33 @@ class SqlStore:
     def __init__(self, db_path=DB_PATH):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
+        # 2026-10-27（用戶要求）：value 表升做獨立 module（value.db）
+        # terminology 唔再擁有 value 表 —— ATTACH value.db 做 vdb（SSOT）
+        self._attach_value_db()
         self._migrate_registry_schema()
         # 建表（全部 IF NOT EXISTS，冪等）+ 字典 seed
+        # 注意：VALUE_DDL 唔再喺呢度建（value 表由 value module 擁有）
         self.conn.executescript(";\n".join([
             INDUSTRY_DDL, EVIDENCE_DDL,
             REGISTRY_DDL,
-            CONDITION_DDL, W5H2_DDL, VALUE_DDL, RUN_DDL, FLOW_DDL, STEP_DDL,
+            CONDITION_DDL, W5H2_DDL, RUN_DDL, FLOW_DDL, STEP_DDL,
             FLOW_BRANCH_DDL, NEXT_FLOW_DDL,
             EXPECTED_DDL, OPERATOR_DDL, ANSWER_DDL, BOOLEAN_DDL,
             QUESTION_DDL, SEQ_DDL, STATUS_DDL,
-            WORD_CATEGORY_DDL,
+            WORD_CATEGORY_DDL, SOURCE_REGISTER_DDL,
         ]))
         self.conn.commit()
+
+    def _attach_value_db(self):
+        """ATTACH value.db 做 vdb（SSOT：值資產由 value module 擁有）
+
+        冪等：已 ATTACH 就唔再 ATTACH。
+        """
+        try:
+            self.conn.execute("ATTACH DATABASE ? AS vdb",
+                              (r"C:\projects\meta\value\value.db",))
+        except sqlite3.OperationalError:
+            pass  # 已 ATTACH
         self._migrate_drop_removed_tables()
         self._migrate_test_condition()
         self._migrate_flow_run_rename()
@@ -93,7 +108,28 @@ class SqlStore:
         self._migrate_branch_tables()
         self._migrate_word_industry_evidence()
         self._migrate_run_evidence_id()
+        self._migrate_run_role_id()
+        self._migrate_proof_flows()
+        self._migrate_source_register_defaults()
+        self._migrate_value_taxonomy_id()
         self._seed()
+
+    def _migrate_run_role_id(self):
+        """遷移（幂等）：run 加 role_id 欄（2026-10-27 用戶要求）
+
+        proof / verify 係 flow（唔係 module）—— 執行記錄喺 run 表，
+        role_id = role.db registry.id（邊個角色執行）。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('run')")}
+        if "role_id" not in cols:
+            self.conn.execute("ALTER TABLE run ADD COLUMN role_id INTEGER")
+            self.conn.commit()
+            print("[terminology] run 表加 role_id 欄")
+        if "rule_id" not in cols:
+            self.conn.execute("ALTER TABLE run ADD COLUMN rule_id INTEGER")
+            self.conn.commit()
+            print("[terminology] run 表加 rule_id 欄")
 
     def _migrate_registry_schema(self):
         """重建舊 registry 定義；非空舊表無法無損映射時明確停止。"""
@@ -121,6 +157,127 @@ class SqlStore:
         self.conn.execute("ALTER TABLE run ADD COLUMN evidence_id INTEGER")
         self.conn.commit()
         print("[migrate] run 加 evidence_id 欄")
+
+    def _migrate_proof_flows(self):
+        """遷移（幂等）：evidence / proof / verify 三條證明 flow（2026-10-27 用戶要求）
+
+        flow 表 + condition 表各加 3 個值：
+            evidence / proof / verify
+        每條 flow 4 個 STEP（5W2H 框架）：
+            what   -> 邊個 id（evidence_id / version_id / verify_id）
+            where  -> 喺邊個 module（module=evidence / version / verify）
+            where  -> 喺邊張表（registry / verify）
+            how    -> 點證明（formula_id，formula_type=evidence/proof/verify，status=1）
+
+        冪等：flow_name UNIQUE + condition.meta UNIQUE + step UNIQUE(flow_id, seq_id)
+        -> 全部 WHERE NOT EXISTS，重跑唔重複。
+        """
+        # 1. condition 加 3 個值（meta UNIQUE -> 冪等）
+        for meta in ("evidence", "proof", "verify", "source_register"):
+            self.conn.execute(
+                "INSERT INTO condition (meta)"
+                " SELECT ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM condition WHERE meta = ?)",
+                (meta, meta))
+        # 2. flow 加 3 條（flow_name UNIQUE -> 冪等）
+        for fname in ("evidence", "proof", "verify", "source_register"):
+            self.conn.execute(
+                "INSERT INTO flow (flow_name)"
+                " SELECT ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM flow WHERE flow_name = ?)",
+                (fname, fname))
+        self.conn.commit()
+        # 3. 每條 flow 建 4 個 STEP（what / where / where / how）
+        #    question 唔需要新行 —— step 直接指 condition（question_id 用
+        #    condition 對應嘅現有 question；冇就建一個淨 condition 嘅 question）
+        #    5W2H id：1=what 2=where 6=how
+        #    expected：1=真（期望 PASS）
+        exp_true = self.conn.execute(
+            "SELECT id FROM expected WHERE boolean_id = 1"
+            " ORDER BY id LIMIT 1").fetchone()
+        exp_id = exp_true["id"] if exp_true else None
+        op_eq = self.conn.execute(
+            "SELECT id FROM operator WHERE meta = '=='"
+            " ORDER BY id LIMIT 1").fetchone()
+        op_id = op_eq["id"] if op_eq else None
+        w_what, w_where, w_how = 1, 2, 6
+        # 每個 flow 嘅 4 步定義（condition_meta, 5w2h_id）
+        steps_def = {
+            "evidence": [
+                ("evidence", w_what),   # what == evidence_id
+                ("evidence", w_where),  # where == module=evidence
+                ("evidence", w_where),  # where == table=registry
+                ("evidence", w_how),    # how == formula_id, type=evidence, status=1
+            ],
+            "proof": [
+                ("proof", w_what),      # what == version_id
+                ("proof", w_where),     # where == module=version
+                ("proof", w_where),     # where == table=registry
+                ("proof", w_how),       # how == formula_id, type=proof, status=1
+            ],
+            "verify": [
+                ("verify", w_what),     # what == verify_id
+                ("verify", w_where),    # where == module=verify
+                ("verify", w_where),    # where == table=verify
+                ("verify", w_how),      # how == formula_id, type=verify, status=1
+            ],
+            "source_register": [
+                ("source_register", w_what),   # what == 詞（word）
+                ("source_register", w_where),  # where == source（邊個來源）
+                ("source_register", w_where),  # where == source_proof 表
+                ("source_register", w_how),    # how == 登記（add_source_proof）
+            ],
+        }
+        for fname, steps in steps_def.items():
+            frow = self.conn.execute(
+                "SELECT id FROM flow WHERE flow_name = ?", (fname,)).fetchone()
+            if not frow:
+                continue
+            fid = frow["id"]
+            for seq, (cmeta, w5) in enumerate(steps, start=1):
+                # 已有 step（flow_id + seq_id UNIQUE）-> 跳過
+                has = self.conn.execute(
+                    "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
+                    (fid, seq)).fetchone()
+                if has:
+                    continue
+                crow = self.conn.execute(
+                    "SELECT id FROM condition WHERE meta = ?",
+                    (cmeta,)).fetchone()
+                if not crow:
+                    continue
+                # question：condition + 5w2h + expected 組合（UNIQUE 冪等）
+                qrow = self.conn.execute(
+                    "SELECT id FROM question WHERE condition_id = ?"
+                    ' AND "5w2h_id" = ? AND expected_id = ?',
+                    (crow["id"], w5, exp_id)).fetchone()
+                if qrow:
+                    qid = qrow["id"]
+                else:
+                    cur = self.conn.execute(
+                        "INSERT INTO question"
+                        " (condition_id, \"5w2h_id\", operator_id, expected_id)"
+                        " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                        " (SELECT 1 FROM question WHERE condition_id = ?"
+                        '  AND "5w2h_id" = ? AND expected_id = ?)',
+                        (crow["id"], w5, op_id, exp_id,
+                         crow["id"], w5, exp_id))
+                    qid = cur.lastrowid if cur.rowcount else None
+                    if qid is None:
+                        qr = self.conn.execute(
+                            "SELECT id FROM question WHERE condition_id = ?"
+                            ' AND "5w2h_id" = ? AND expected_id = ?',
+                            (crow["id"], w5, exp_id)).fetchone()
+                        qid = qr["id"] if qr else None
+                if not qid:
+                    continue
+                self.conn.execute(
+                    "INSERT INTO step (flow_id, question_id, seq_id)"
+                    " SELECT ?, ?, ? WHERE NOT EXISTS"
+                    " (SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?)",
+                    (fid, qid, seq, fid, seq))
+        self.conn.commit()
+        print("[migrate] evidence/proof/verify flow + condition + step 就緒")
 
     def _migrate_word_industry_evidence(self):
         """遷移（幂等）：word_industry -> 通用 evidence 表（2026-10-25）
@@ -155,7 +312,7 @@ class SqlStore:
             # source_id：由 source.db 查詞 -> source_proof -> source.id
             vid = r["value_id"]
             v = self.conn.execute(
-                "SELECT value FROM value WHERE id = ?", (vid,)).fetchone()
+                "SELECT value FROM vdb.value WHERE id = ?", (vid,)).fetchone()
             if not v or v["value"] is None:
                 continue
             src = self._source_id_for(v["value"])
@@ -179,6 +336,7 @@ class SqlStore:
     def _source_id_for(self, value):
         """由 source.db 查一個詞嘅 source.id（冇證明返回 None）
 
+        2026-10-27：大小楷唔敏感（source_proof.word 統一細楷比較）。
         零 hardcode：evidence.source_id 一定要指向真實 source。
         """
         try:
@@ -188,8 +346,174 @@ class SqlStore:
                 _c.row_factory = _sq.Row
                 r = _c.execute(
                     "SELECT sp.source_id FROM source_proof sp"
-                    " WHERE sp.word = ? AND sp.is_active = 1"
+                    " WHERE LOWER(sp.word) = LOWER(?) AND sp.is_active = 1"
                     " ORDER BY sp.id LIMIT 1", (value,)).fetchone()
+                return r["source_id"] if r else None
+            finally:
+                _c.close()
+        except Exception:
+            return None
+
+    def _migrate_source_register_defaults(self):
+        """遷移（幂等）：後備 source 入 db_field_option（2026-10-27）
+
+        後備 source（source_register 表未設定詞時用）入 structure.db
+        db_field_option（表話事，唔 hardcode）：
+            掛喺 structure_db_table='source_register' +
+            structure_db_field='source_id' 嘅 option 行。
+        冇呢對真表/欄位 -> skip（source_register 表照用）。
+        """
+        # 搵後備 source_id：source.db 第一個有 official_url 嘅 source
+        fallback_src = None
+        try:
+            import sqlite3 as _sq
+            _c = _sq.connect(r"C:\projects\meta\source\source.db")
+            try:
+                _c.row_factory = _sq.Row
+                r = _c.execute(
+                    "SELECT s.id FROM source s"
+                    " JOIN provider p ON p.id = s.provider_id"
+                    " WHERE p.official_url IS NOT NULL"
+                    " AND p.official_url != ''"
+                    " ORDER BY s.id LIMIT 1").fetchone()
+                fallback_src = r["id"] if r else None
+            finally:
+                _c.close()
+        except Exception:
+            pass
+        if fallback_src is None:
+            return
+        # 寫入 structure.db db_field_option
+        try:
+            import sqlite3 as _sq
+            sc = _sq.connect(r"C:\projects\meta\structure\structure.db")
+            try:
+                # 搵 structure_db_table row（table_name='source_register'）
+                tr = sc.execute(
+                    "SELECT id FROM structure_db_table"
+                    " WHERE table_name = 'source_register' LIMIT 1").fetchone()
+                fr = sc.execute(
+                    "SELECT id FROM structure_db_field"
+                    " WHERE field_name = 'source_id' LIMIT 1").fetchone()
+                if tr and fr:
+                    sc.execute(
+                        "INSERT INTO db_field_option"
+                        " (structure_db_table_id, structure_db_field_id,"
+                        "  db_field_type_id, value, description)"
+                        " SELECT ?, ?, ty.id, ?,"
+                        "        'source_register fallback source_id'"
+                        " FROM db_field_type ty WHERE ty.meta = 'INTEGER'"
+                        " WHERE NOT EXISTS"
+                        " (SELECT 1 FROM db_field_option"
+                        "  WHERE structure_db_table_id = ?"
+                        "  AND structure_db_field_id = ? AND value = ?)",
+                        (tr[0], fr[0], str(fallback_src),
+                         tr[0], fr[0], str(fallback_src)))
+                    sc.commit()
+            finally:
+                sc.close()
+        except Exception:
+            pass
+
+    def _fallback_source_id(self):
+        """後備 source：source_register 表冇設定時用邊個 source（2026-10-27 改名）
+
+        查「source_register 表 + source_id 欄」嘅 db_field_option 值；
+        搵唔到 -> 由 source.db 第一個有 official_url 嘅 source 兜底。
+        零 hardcode（唔再寫死 8）。
+        """
+        try:
+            import sqlite3 as _sq
+            sc = _sq.connect(
+                f"file:{r'C:\projects\meta\structure\structure.db'}?mode=ro",
+                uri=True)
+            try:
+                sc.row_factory = _sq.Row
+                r = sc.execute(
+                    "SELECT o.value FROM db_field_option o"
+                    " JOIN structure_db_table t ON t.id = o.structure_db_table_id"
+                    " JOIN structure_db_field f ON f.id = o.structure_db_field_id"
+                    " WHERE t.table_name = 'source_register'"
+                    " AND f.field_name = 'source_id'"
+                    " ORDER BY o.id LIMIT 1").fetchone()
+                if r:
+                    try:
+                        return int(r["value"])
+                    except Exception:
+                        pass
+            finally:
+                sc.close()
+        except Exception:
+            pass
+        # 兜底：source.db 第一個有 official_url 嘅 source
+        try:
+            import sqlite3 as _sq
+            _c = _sq.connect(r"C:\projects\meta\source\source.db")
+            try:
+                _c.row_factory = _sq.Row
+                r = _c.execute(
+                    "SELECT s.id FROM source s"
+                    " JOIN provider p ON p.id = s.provider_id"
+                    " WHERE p.official_url IS NOT NULL"
+                    " AND p.official_url != ''"
+                    " ORDER BY s.id LIMIT 1").fetchone()
+                return r["id"] if r else None
+            finally:
+                _c.close()
+        except Exception:
+            return None
+
+    def get_source(self, word):
+        """一個詞用邊個 source（source_register 表話事，2026-10-27）
+
+        優先：source_register 表（word -> source_id，人/API 設定）
+        兜底：後備 source（db_field_option / source.db 第一個有 url）
+        再兜底：None（唔可以 fake）
+        """
+        if word:
+            r = self.conn.execute(
+                "SELECT source_id FROM source_register"
+                " WHERE LOWER(word) = LOWER(?) AND is_active = 1"
+                " ORDER BY id DESC LIMIT 1", (word,)).fetchone()
+            if r and r["source_id"]:
+                return r["source_id"]
+        return self._fallback_source_id()
+
+    def source_proof_of(self, word):
+        """驗證一個詞嘅 source 證明（有冇效，source.db 查）
+
+        返回 {"has": bool, "source_id": n|None, "source": str|None,
+              "provider": str|None, "official_url": str|None}
+        """
+        try:
+            from source import Source as _S
+            s2 = _S()
+            try:
+                p = s2.source_proof(str(word or "").lower())
+                sid = self._source_id_of_proof(str(word or ""))
+                return {"has": p["has"], "source_id": sid,
+                        "source": p.get("source"),
+                        "provider": p.get("provider"),
+                        "official_url": p.get("url")}
+            finally:
+                s2.close()
+        except Exception:
+            return {"has": False, "source_id": None, "source": None,
+                    "provider": None, "official_url": None}
+
+    def _source_id_of_proof(self, word):
+        """由 source_proof 攞一個詞已登記嘅 source_id（冇 = None）"""
+        try:
+            import sqlite3 as _sq
+            _c = _sq.connect(
+                f"file:{r'C:\projects\meta\source\source.db'}?mode=ro",
+                uri=True)
+            try:
+                _c.row_factory = _sq.Row
+                r = _c.execute(
+                    "SELECT source_id FROM source_proof"
+                    " WHERE LOWER(word) = LOWER(?) AND is_active = 1"
+                    " LIMIT 1", (word,)).fetchone()
                 return r["source_id"] if r else None
             finally:
                 _c.close()
@@ -711,15 +1035,15 @@ class SqlStore:
         vid = self._value_id(value)
         if not vid:
             return []
-        sql = ("SELECT e.id, e.value_id, v.value, e.run_id,"
+        sql = ("SELECT e.id AS evidence_id, e.value_id, v.value, e.run_id,"
                " e.condition_id, c.meta AS condition,"
                " e.source_id, e.status_id,"
                " e.is_active, e.created_at"
                " FROM evidence e"
-               " LEFT JOIN value v ON v.id = e.value_id"
+               " LEFT JOIN vdb.value v ON v.id = e.value_id"
                " LEFT JOIN condition c ON c.id = e.condition_id"
-               " WHERE e.value_id = ?")
-        args = [vid]
+               " WHERE LOWER(v.value) = LOWER(?)")
+        args = [value]
         if condition_meta:
             sql += " AND c.meta = ?"
             args.append(condition_meta)
@@ -765,14 +1089,15 @@ class SqlStore:
                                     condition_meta="industry")
 
     def _value_id(self, value):
-        """由值攞 value.id（唔存在返回 None）"""
+        """由值攞 value.id（唔存在返回 None；value 表喺 value.db）"""
         r = self.conn.execute(
-            "SELECT id FROM value WHERE value IS ?", (value,)).fetchone()
+            "SELECT id FROM vdb.value WHERE value IS ?", (value,)).fetchone()
         return r["id"] if r else None
 
     def _source_id_for(self, value):
         """由 source.db 查一個詞嘅 source.id（冇證明返回 None）
 
+        2026-10-27：大小楷唔敏感（source_proof.word 統一細楷比較）。
         零 hardcode：evidence.source_id 一定要指向真實 source。
         """
         try:
@@ -782,7 +1107,7 @@ class SqlStore:
                 _c.row_factory = _sq.Row
                 r = _c.execute(
                     "SELECT sp.source_id FROM source_proof sp"
-                    " WHERE sp.word = ? AND sp.is_active = 1"
+                    " WHERE LOWER(sp.word) = LOWER(?) AND sp.is_active = 1"
                     " ORDER BY sp.id LIMIT 1", (value,)).fetchone()
                 return r["source_id"] if r else None
             finally:
@@ -808,7 +1133,7 @@ class SqlStore:
                 _c.row_factory = _sq.Row
                 sp = _c.execute(
                     "SELECT source_id FROM source_proof sp"
-                    " WHERE sp.word = ? AND sp.is_active = 1"
+                    " WHERE LOWER(sp.word) = LOWER(?) AND sp.is_active = 1"
                     " ORDER BY sp.id LIMIT 1", (value,)).fetchone()
                 if not sp:
                     return None
@@ -853,7 +1178,7 @@ class SqlStore:
         if not all(j["is_pass"] for j in judged):
             return None
         vid = self.conn.execute(
-            "SELECT value FROM value WHERE id = ?", (value_id,)).fetchone()
+            "SELECT value FROM vdb.value WHERE id = ?", (value_id,)).fetchone()
         v = vid["value"] if vid else None
         if v is None:
             return None
@@ -904,7 +1229,7 @@ class SqlStore:
         """
         if not word:
             return None
-        w = str(word)
+        w = str(word).upper()  # 2026-10-27（用戶要求）：word_category 只存大楷
         # 分類：由 character / source 真查（graceful，唔 crash）
         english = int(w.isalpha() and w.isascii())
         only_int = int(w.isdigit())
@@ -968,7 +1293,7 @@ class SqlStore:
         except Exception as exc:
             print(f"[terminology] word_proof flow 執行失敗: {exc}")
         cat = self.conn.execute(
-            "SELECT * FROM word_category WHERE word = ?",
+            "SELECT * FROM word_category WHERE LOWER(word) = LOWER(?)",
             (w,)).fetchone()
         cat_row = dict(cat) if cat else None
         ev = self.evidence_of(w)
@@ -976,9 +1301,9 @@ class SqlStore:
             """SELECT r.id AS run_id, r.flow_id, f.flow_name, r.status_id,
                       r.status_id AS status, r.created_at
                FROM run r
-               JOIN value v ON v.id = r.value_id
+               JOIN vdb.value v ON v.id = r.value_id
                LEFT JOIN flow f ON f.id = r.flow_id
-               WHERE v.value = ? ORDER BY r.id DESC LIMIT 10""", (w,))]
+               WHERE LOWER(v.value) = LOWER(?) ORDER BY r.id DESC LIMIT 10""", (w,))]
         for _r in runs:
             _r["status"] = "approved" if _r["status_id"] == 1 else "rejected"
         # source：由 source.db 攞名（graceful）
@@ -990,7 +1315,7 @@ class SqlStore:
                 _c.row_factory = _sq.Row
                 sp = _c.execute(
                     "SELECT source_id FROM source_proof"
-                    " WHERE word = ? AND is_active = 1"
+                    " WHERE LOWER(word) = LOWER(?) AND is_active = 1"
                     " ORDER BY id LIMIT 1", (w,)).fetchone()
                 if sp:
                     src = _c.execute(
@@ -1098,16 +1423,82 @@ class SqlStore:
         sql += " ORDER BY s.seq_id"
         return [dict(r) for r in self.conn.execute(sql, args)]
 
-    def add_value(self, value):
-        """新增 / 攞一個提交值嘅 id（冪等）"""
+    def add_value(self, value, taxonomy_id=None):
+        """新增 / 攞一個提交值嘅 id（冪等；value 表喺 value.db）
+
+        taxonomy_id = taxonomy.registry.id（邊個 module 登記，2026-10-27）
+        """
         r = self.conn.execute(
-            "SELECT id FROM value WHERE value IS ?", (value,)).fetchone()
+            "SELECT id FROM vdb.value WHERE value IS ?", (value,)).fetchone()
         if r:
+            # 補 taxonomy_id（第一次登記冇填 -> 而家填）
+            if taxonomy_id is not None:
+                self.conn.execute(
+                    "UPDATE vdb.value SET taxonomy_id = ?"
+                    " WHERE id = ? AND taxonomy_id IS NULL",
+                    (taxonomy_id, r["id"]))
+                self.conn.commit()
             return r["id"]
         cur = self.conn.execute(
-            "INSERT INTO value (value) VALUES (?)", (value,))
+            "INSERT INTO vdb.value (value, taxonomy_id) VALUES (?, ?)",
+            (value, taxonomy_id))
         self.conn.commit()
         return cur.lastrowid
+
+    def _migrate_value_taxonomy_id(self):
+        """遷移（幂等）：value 加 taxonomy_id 欄 + 回填（2026-10-27 用戶要求）
+
+        回填：由 run JOIN flow 反查每個 value 嘅 flow_name，
+        flow_name -> taxonomy.registry.meta（module 名）-> taxonomy_id。
+        搵唔到 -> NULL（唔假造）。
+        value 表而家喺 value.db（vdb）。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA vdb.table_info('value')")}
+        if "taxonomy_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE vdb.value ADD COLUMN taxonomy_id INTEGER")
+            self.conn.commit()
+            print("[migrate] value + taxonomy_id 欄")
+        # 回填：value ->（run -> flow_name）-> taxonomy.module id
+        n = 0
+        try:
+            import sqlite3 as _sq
+            tc = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            tc.row_factory = _sq.Row
+            mods = {}
+            try:
+                for r in tc.execute(
+                        "SELECT id, meta FROM registry"
+                        " WHERE tree_id = 2 AND is_active = 1"):
+                    mods[r["meta"]] = r["id"]
+            finally:
+                tc.close()
+        except Exception:
+            mods = {}
+        rows = self.conn.execute(
+            "SELECT v.id, v.value FROM vdb.value v"
+            " WHERE v.taxonomy_id IS NULL").fetchall()
+        for r in rows:
+            # 由 run 搵 flow_name（最近一次）
+            fr = self.conn.execute(
+                "SELECT f.flow_name FROM run r"
+                " JOIN flow f ON f.id = r.flow_id"
+                " JOIN vdb.value v ON v.id = r.value_id"
+                " WHERE v.id = ? ORDER BY r.id DESC LIMIT 1",
+                (r["id"],)).fetchone()
+            if not fr:
+                continue
+            tid = mods.get(fr["flow_name"])
+            if tid:
+                self.conn.execute(
+                    "UPDATE vdb.value SET taxonomy_id = ? WHERE id = ?",
+                    (tid, r["id"]))
+                n += 1
+        self.conn.commit()
+        if n:
+            print(f"[migrate] value.taxonomy_id 回填：{n} 行")
+        return n
 
     def _judge(self, expression, pass_value, answer):
         """由 operator expression 判斷（自己 eval，自己擁有）
@@ -1145,6 +1536,9 @@ class SqlStore:
         for s in self.flow_steps(flow_name):
             test = s["test"]
             v = value or ""
+            # 2026-10-27（用戶要求）：判斷唔分大小楷 ——
+            # 查 source / word_category / run / evidence 全部 LOWER 比較
+            vl = v.lower()
             if test == "symbol":
                 try:
                     from character import Character
@@ -1162,7 +1556,7 @@ class SqlStore:
                     from source import Source as _S
                     s2 = _S()
                     try:
-                        p = s2.source_proof(v)
+                        p = s2.source_proof(vl)
                         answers[s["question_id"]] = 1 if p["has"] else 0
                     finally:
                         s2.close()
@@ -1188,7 +1582,7 @@ class SqlStore:
                     from source import Source as _S
                     _s2 = _S()
                     try:
-                        _p = _s2.source_proof(v)
+                        _p = _s2.source_proof(vl)
                         answers[s["question_id"]] = 1 if _p["has"] else 0
                     finally:
                         _s2.close()
@@ -1198,17 +1592,82 @@ class SqlStore:
                 # chain of proof：值有冇 approved run
                 r = self.conn.execute(
                     "SELECT 1 FROM run r"
-                    " JOIN value v ON v.id = r.value_id"
-                    " WHERE v.value = ? AND r.status_id = 1"
-                    " AND r.is_active = 1", (v,)).fetchone()
+                    " JOIN vdb.value v ON v.id = r.value_id"
+                    " WHERE LOWER(v.value) = ? AND r.status_id = 1"
+                    " AND r.is_active = 1", (vl,)).fetchone()
                 answers[s["question_id"]] = 1 if r else 0
             elif test in ("proof", "source"):
                 try:
                     from source import Source as _S
                     s2 = _S()
                     try:
-                        p = s2.source_proof(v)
+                        p = s2.source_proof(vl)
                         answers[s["question_id"]] = 1 if p["has"] else 0
+                    finally:
+                        s2.close()
+                except Exception:
+                    answers[s["question_id"]] = 0
+            elif test in ("evidence", "proof", "verify"):
+                # 2026-10-27（用戶要求）：證明 flow 嘅 condition ——
+                # 判斷 = 呢個值有冇對應嘅證明記錄：
+                #   evidence -> evidence 表有行（value_id 對應）
+                #   proof    -> run 有 approved（chain of proof）
+                #   verify   -> word_category 有行（已驗證）
+                if test == "evidence":
+                    r = self.conn.execute(
+                        "SELECT 1 FROM evidence e"
+                        " JOIN vdb.value v ON v.id = e.value_id"
+                        " WHERE LOWER(v.value) = ? AND e.is_active = 1"
+                        " LIMIT 1", (vl,)).fetchone()
+                    answers[s["question_id"]] = 1 if r else 0
+                elif test == "proof":
+                    r = self.conn.execute(
+                        "SELECT 1 FROM run r"
+                        " JOIN vdb.value v ON v.id = r.value_id"
+                        " WHERE LOWER(v.value) = ? AND r.status_id = 1"
+                        " AND r.is_active = 1 LIMIT 1", (vl,)).fetchone()
+                    answers[s["question_id"]] = 1 if r else 0
+                else:  # verify
+                    r = self.conn.execute(
+                        "SELECT 1 FROM word_category WHERE LOWER(word) = ?",
+                        (vl,)).fetchone()
+                    answers[s["question_id"]] = 1 if r else 0
+            elif test == "source_register":
+                # 2026-10-27（用戶要求）：source_register flow ——
+                # 判斷 = 詞有冇 source 證明；冇 -> 自動登記。
+                # source_id 由表話事（零 hardcode）：
+                #   source_register 表（word -> source_id）優先
+                #   db_field_option（structure.db）後備
+                # 登記成功 = PASS（呢條 flow 嘅目的就係「第一次查 -> 登記」）
+                try:
+                    from source import Source as _S
+                    s2 = _S()
+                    try:
+                        p = s2.source_proof(vl)
+                        if p["has"]:
+                            answers[s["question_id"]] = 1
+                        else:
+                            src_id = self.get_source(vl)
+                            if src_id is None:
+                                answers[s["question_id"]] = 0
+                            else:
+                                res = s2.try_register(
+                                    vl, source_id=src_id,
+                                    proof="auto-register",
+                                    caller="terminology.source_register")
+                                # 記錄入 source_register 表（表話事）
+                                if res["registered"]:
+                                    self.conn.execute(
+                                        "INSERT INTO source_register"
+                                        " (word, source_id, registered_by)"
+                                        " SELECT ?, ?, ? WHERE NOT EXISTS"
+                                        " (SELECT 1 FROM source_register"
+                                        "  WHERE LOWER(word) = LOWER(?))",
+                                        (vl, src_id,
+                                         "terminology.source_register", vl))
+                                    self.conn.commit()
+                                answers[s["question_id"]] = \
+                                    1 if res["registered"] else 0
                     finally:
                         s2.close()
                 except Exception:
@@ -1218,11 +1677,14 @@ class SqlStore:
         return answers
 
     def run_flow(self, flow_name, answers=None, value=None,
-                 value_id=None, save=True, _depth=0):
+                 value_id=None, save=True, _depth=0, role_id=None,
+                 rule_id=None):
         """行一個驗證鏈（線性，第一個 FAIL 就停）—— 自己擁有
 
         answers = None -> 按 value 自動判斷（_auto_answers）
         value    = 提交去檢查嘅值（自動入 value 表）
+        role_id  = role.db registry.id（邊個角色執行，2026-10-27）
+        rule_id  = rule.db rule.id（跟邊條規則，2026-10-27e）
         全部 PASS -> status_id=1（approved）；第一個 FAIL -> 2（rejected）
 
         flow 連結 / 分支：由 next_flow（_do_branch）統一處理 ——
@@ -1275,7 +1737,7 @@ class SqlStore:
         evidence_id = None
         if save:
             run_id = self._save_run(flow_name, value_id, stopped,
-                                    status_id, judged)
+                                    status_id, judged, role_id, rule_id)
             # 證據：全 PASS -> 每個 PASS step 寫一條 evidence；失敗 run = 冇
             if status_id == 1 and value_id:
                 evidence_id = self._save_evidence(run_id, value_id,
@@ -1293,7 +1755,8 @@ class SqlStore:
             # flow_branch 決策：寫 flow_branch（每個 condition 實際結果）
             # -> 查 next_flow（flow + condition + status）-> 自動跑 target flow
             branch = self._do_branch(flow_name, run_id, value_id,
-                                     steps, judged, save, _depth)
+                                     steps, judged, save, _depth, role_id,
+                                     rule_id)
         out = {"status_id": status_id,
                "steps": [j["seq"] for j in judged],
                "step_id": stopped, "answers": judged, "run_id": run_id,
@@ -1304,14 +1767,14 @@ class SqlStore:
         return out
 
     def _do_branch(self, flow_name, run_id, value_id, steps, judged,
-                   save, _depth):
+                   save, _depth, role_id=None, rule_id=None):
         """執行分支決策（0 hardcode）
 
         1. 為每個 step 嘅 condition 寫 flow_branch（runtime 記錄：
            run_id, value_id, condition_id, status_id = 實際判斷 PASS/FAIL）
         2. 查 next_flow 規則（flow + condition + status）
            -> flow_branch_id -> 攞目標 flow_branch 行嘅 flow_id = 下一條 flow
-        3. 自動跑下一條 flow
+        3. 自動跑下一條 flow（role_id 傳落去）
 
         返回 {"condition", "status_id", "next_flow", "next_run_id"}
               如果 has 分支；否則 None
@@ -1355,35 +1818,39 @@ class SqlStore:
         # 3. 跑下一條 flow
         out = []
         vrow = self.conn.execute(
-            "SELECT value FROM value WHERE id = ?", (value_id,)).fetchone()
+            "SELECT value FROM vdb.value WHERE id = ?", (value_id,)).fetchone()
         v = vrow["value"] if vrow else None
         for r in rows:
             sub = self.run_flow(r["next_flow"], answers=None, value=v,
-                                save=save, _depth=_depth + 1)
+                                save=save, _depth=_depth + 1, role_id=role_id,
+                                rule_id=rule_id)
             out.append({"condition": r["condition_meta"],
                         "status_id": r["status_id"],
                         "next_flow": r["next_flow"],
                         "next_run_id": sub["run_id"]})
         return out[0] if len(out) == 1 else out
 
-    def _save_run(self, flow_name, value_id, step_id, status_id, judged):
+    def _save_run(self, flow_name, value_id, step_id, status_id, judged,
+                  role_id=None, rule_id=None):
         """寫入 run（證明）—— 全部欄 NOT NULL（2026-10-25 用戶要求）
 
         value_id = None（冇提交值）-> 指向 value 表 ''（空值行）
         step_id  = None（全 PASS 冇停步）-> 最後一步
         answer_id = 最終答案（全部 PASS -> 1 真，有 FAIL -> 2 假）
+        role_id  = role.db registry.id（邊個角色執行，2026-10-27）
+        rule_id  = rule.db rule.id（跟邊條規則，2026-10-27e）
         """
         fr = self.conn.execute(
             "SELECT id FROM flow WHERE flow_name = ?",
             (flow_name,)).fetchone()
         fid = fr["id"] if fr else None
-        # value_id 缺 -> 空值行（`value = ''`）
+        # value_id 缺 -> 空值行（`value = ''`，喺 value.db）
         if value_id is None:
             self.conn.execute(
-                "INSERT INTO value (value) SELECT '' WHERE NOT EXISTS"
-                " (SELECT 1 FROM value WHERE value = '')")
+                "INSERT INTO vdb.value (value) SELECT '' WHERE NOT EXISTS"
+                " (SELECT 1 FROM vdb.value WHERE value = '')")
             value_id = self.conn.execute(
-                "SELECT id FROM value WHERE value = ''").fetchone()["id"]
+                "SELECT id FROM vdb.value WHERE value = ''").fetchone()["id"]
         # step_id 缺（全 PASS）-> 最後一步（唔可以 NULL）
         if step_id is None and fid:
             last = self.conn.execute(
@@ -1417,9 +1884,11 @@ class SqlStore:
                 "expected 表要有 boolean 0 同 1 —— 寫唔到 run（expected_id 唔可以 NULL）")
         cur = self.conn.execute(
             "INSERT INTO run"
-            " (flow_id, value_id, step_id, status_id, answer_id, expected_id)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (fid, value_id, step_id, status_id, answer_id, expected_id))
+            " (flow_id, value_id, step_id, status_id, answer_id, expected_id,"
+            "  role_id, rule_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (fid, value_id, step_id, status_id, answer_id, expected_id,
+             role_id, rule_id))
         run_id = cur.lastrowid
         self.conn.commit()
         return run_id
@@ -1430,10 +1899,11 @@ class SqlStore:
             """SELECT r.id, r.flow_id, f.flow_name,
                       r.value_id, v.value,
                       r.step_id, sq.seq AS step_seq,
-                      r.status_id, b.value AS status, r.created_at
+                      r.status_id, b.value AS status, r.role_id, r.rule_id,
+                      r.created_at
                FROM run r
                LEFT JOIN flow f ON f.id = r.flow_id
-               LEFT JOIN value v ON v.id = r.value_id
+               LEFT JOIN vdb.value v ON v.id = r.value_id
                LEFT JOIN step st ON st.id = r.step_id
                LEFT JOIN seq sq ON sq.id = st.seq_id
                LEFT JOIN status s ON s.id = r.status_id

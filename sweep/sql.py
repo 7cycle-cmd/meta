@@ -15,6 +15,7 @@ sweep = module（清理能力）
         mission_log     任務執行記錄（apply mission）
 """
 
+import os as _os
 import sqlite3
 
 from .schema import *  # noqa: F401,E402
@@ -43,7 +44,8 @@ class SqlStore:
         self.conn.executescript(
             ACTION_DDL + STATUS_DDL + RESOURCE_TYPE_DDL + PHYSICAL_TYPE_DDL
             + TARGET_DDL + MISSION_DDL + MISSION_RUN_DDL
-            + EVIDENCE_DDL + PROOF_DDL + MISSION_LOG_DDL)
+            + EVIDENCE_DDL + PROOF_DDL + MISSION_LOG_DDL
+            + CONDITION_DDL + FLOW_DDL + STEP_DDL + RUN_DDL)
         self.conn.commit()
         # 2026-10-22：資源類型唯一權威 = resource.db type 表
         #   target.resource_type_id 指向 resource.db type.id
@@ -90,6 +92,7 @@ class SqlStore:
         self._migrate_evidence()
         self._migrate_target()
         self._seed_dicts()
+        self._seed_flow()
 
     def _migrate_target(self):
         """舊版 target 升級：加 plan / version 欄（保留資料）"""
@@ -153,6 +156,229 @@ class SqlStore:
             self.conn.execute(
                 "INSERT OR IGNORE INTO physical_type (meta) VALUES (?)", (meta,))
         self.conn.commit()
+
+    def _seed_flow(self):
+        """seed sweep_prove flow + condition + step（2026-10-27 用戶要求）
+
+        condition：sweep_empty / sweep_dead / sweep_legacy / sweep_orphan / sweep_active
+        flow：sweep_prove（5 步，每 condition 一步）
+        冪等（UNIQUE + WHERE NOT EXISTS）。
+        """
+        # 1. condition seed
+        for cmeta in DEFAULT_CONDITIONS:
+            self.conn.execute(
+                "INSERT INTO condition (meta)"
+                " SELECT ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM condition WHERE meta = ?)",
+                (cmeta, cmeta))
+        # 2. flow seed
+        self.conn.execute(
+            "INSERT INTO flow (flow_name)"
+            " SELECT 'sweep_prove' WHERE NOT EXISTS"
+            " (SELECT 1 FROM flow WHERE flow_name = 'sweep_prove')")
+        self.conn.commit()
+        # 3. step seed（flow_id + seq_id UNIQUE -> 冪等）
+        frow = self.conn.execute(
+            "SELECT id FROM flow WHERE flow_name = 'sweep_prove'").fetchone()
+        if not frow:
+            return
+        fid = frow["id"]
+        for seq, cmeta in enumerate(DEFAULT_CONDITIONS, start=1):
+            crow = self.conn.execute(
+                "SELECT id FROM condition WHERE meta = ?", (cmeta,)).fetchone()
+            if not crow:
+                continue
+            self.conn.execute(
+                "INSERT INTO step (flow_id, condition_id, seq_id)"
+                " SELECT ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?)",
+                (fid, crow["id"], seq, fid, seq))
+        self.conn.commit()
+
+    def _condition_judge(self, condition_meta, target_row):
+        """一個 sweep condition 嘅判斷（由 target 真實資料計）
+
+        target_row = sweep target 行（dict 或 Row，含 resource_id + status_id）
+        返回 1=PASS 0=FAIL。
+
+        判斷（同 Sweep API 一致）：
+            sweep_empty    -> target 對應張表 0 行
+            sweep_dead     -> status = dead（孤島/冇連接）
+            sweep_legacy   -> status = legacy（有資料但冇人引用）
+            sweep_orphan   -> status = orphan（孤兒）
+            sweep_unproven -> 有實體但冇證明記錄（worker build 咗但忘記記錄）
+            sweep_active   -> status = active（有人引用 + 有資料）
+        """
+        meta = condition_meta
+
+        def _row_status():
+            # target.status_id -> status.meta
+            r = self.conn.execute(
+                "SELECT st.meta FROM status st"
+                " WHERE st.id = ?", (target_row["status_id"],)).fetchone()
+            return r["meta"] if r else None
+
+        if meta == "sweep_empty":
+            return 1 if target_row.get("row_count") == 0 else 0
+        elif meta == "sweep_dead":
+            return 1 if _row_status() == "dead" else 0
+        elif meta == "sweep_legacy":
+            return 1 if _row_status() == "legacy" else 0
+        elif meta == "sweep_orphan":
+            return 1 if _row_status() == "orphan" else 0
+        elif meta == "sweep_unproven":
+            # 有實體（target 存在）但冇證明記錄：
+            #   terminology.run / evidence / lineage 都冇呢個資源嘅記錄
+            #   = worker build 咗但忘記記錄（冇 run_id = 冇證明鏈）
+            return 1 if self._has_no_proof(target_row) else 0
+        elif meta == "sweep_active":
+            return 1 if _row_status() == "active" else 0
+        return 0
+
+    def _has_no_proof(self, target_row):
+        """一個 target 有冇任何證明記錄（run / evidence / lineage）
+
+        冇 = worker build 咗但忘記記錄（unproven）。
+        查詢（CQRS：經各 module 自己 DB）：
+            terminology.db run / evidence（value_id 對應）
+            lineage.db lineage（value_id 對應）
+        """
+        # target.resource_id 格式：例如 "taxonomy.db.module" / "value.db.value"
+        # 由 resource_id 攞 value 名（最後一段）
+        rid = str(target_row.get("resource_id") or "")
+        value_name = rid.split(".")[-1] if "." in rid else rid
+        if not value_name:
+            return True  # 冇資源名 = 冇得證明
+        # 1. value.db 有冇呢個值（冇 = 連值都未登記）
+        try:
+            import sqlite3 as _sq
+            vc = _sq.connect(r"C:\projects\meta\value\value.db")
+            vc.row_factory = _sq.Row
+            try:
+                vrow = vc.execute(
+                    "SELECT id FROM value WHERE value = ? AND is_active = 1",
+                    (value_name,)).fetchone()
+            finally:
+                vc.close()
+        except Exception:
+            vrow = None
+        if not vrow:
+            return True  # 值都未登記 = 冇證明
+        vid = vrow["id"]
+        # 2. terminology run / evidence 有冇呢個 value_id
+        try:
+            tc = _sq.connect(r"C:\projects\meta\terminology\terminology.db")
+            tc.row_factory = _sq.Row
+            try:
+                r = tc.execute(
+                    "SELECT 1 FROM run WHERE value_id = ? AND is_active = 1"
+                    " LIMIT 1", (vid,)).fetchone()
+                if not r:
+                    r = tc.execute(
+                        "SELECT 1 FROM evidence WHERE value_id = ?"
+                        " AND is_active = 1 LIMIT 1", (vid,)).fetchone()
+            finally:
+                tc.close()
+        except Exception:
+            r = None
+        if r:
+            return False  # 有 run / evidence = 有證明
+        # 3. lineage 有冇呢個 value_id
+        try:
+            lc = _sq.connect(r"C:\projects\meta\lineage\lineage.db")
+            lc.row_factory = _sq.Row
+            try:
+                r2 = lc.execute(
+                    "SELECT 1 FROM lineage WHERE value_id = ?"
+                    " AND is_active = 1 LIMIT 1", (vid,)).fetchone()
+            finally:
+                lc.close()
+        except Exception:
+            r2 = None
+        if r2:
+            return False  # 有 lineage = 有證明
+        return True  # 全部冇 = unproven（worker 做咗但忘記記錄）
+
+    def prove_flow(self, target_id):
+        """行 sweep_prove flow 證明一個 target（自動判斷 + 寫 run + evidence）
+
+        返回 {"run_id", "status_id", "status", "steps": [...]}
+        """
+        # target 一定要存在
+        trow = self.conn.execute(
+            "SELECT * FROM target WHERE id = ?", (target_id,)).fetchone()
+        if not trow:
+            raise ValueError(f"target 唔存在: {target_id}")
+        flow = self.conn.execute(
+            "SELECT id FROM flow WHERE flow_name = 'sweep_prove'"
+            " AND is_active = 1").fetchone()
+        if not flow:
+            raise ValueError("sweep_prove flow 未 seed")
+        # 攞 steps（condition 次序）
+        steps = self.conn.execute(
+            "SELECT s.id AS step_id, s.seq_id, c.meta AS condition_meta,"
+            " c.id AS condition_id"
+            " FROM step s JOIN condition c ON c.id = s.condition_id"
+            " WHERE s.flow_id = ? AND s.is_active = 1"
+            " ORDER BY s.seq_id", (flow["id"],)).fetchall()
+        if not steps:
+            raise ValueError("sweep_prove flow 冇 steps")
+        # row_count：由 target.resource_id（db.table）數真實行
+        row_count = None
+        rid = trow["resource_id"] or ""
+        if "." in rid:
+            db_name, tbl = rid.split(".", 1)
+            # 掃全站 *.db（同 function.DB_FILES 一致，零 hardcode）
+            import glob as _glob
+            db_path = None
+            for _p in _glob.glob(r"C:\projects\meta\**\*.db",
+                                 recursive=True):
+                if _os.path.basename(_p) == db_name + ".db":
+                    db_path = _p
+                    break
+            if db_path:
+                try:
+                    _c = sqlite3.connect(
+                        f"file:{db_path}?mode=ro", uri=True)
+                    try:
+                        row_count = _c.execute(
+                            "SELECT COUNT(*) FROM [%s]" % tbl.replace("]", "]]")
+                        ).fetchone()[0]
+                    finally:
+                        _c.close()
+                except Exception:
+                    row_count = None
+        # 判斷
+        judged = []
+        stopped = None
+        all_pass = True
+        for s in steps:
+            ok = self._condition_judge(s["condition_meta"],
+                                       dict(trow) | {"row_count": row_count})
+            judged.append({"step_id": s["step_id"], "seq": s["seq_id"],
+                           "condition": s["condition_meta"],
+                           "is_pass": bool(ok)})
+            if not ok:
+                all_pass = False
+                stopped = s["step_id"]
+                break
+        status_id = 1 if all_pass else 2
+        # 寫 run
+        cur = self.conn.execute(
+            "INSERT INTO run (flow_id, target_id, status_id, step_id)"
+            " VALUES (?, ?, ?, ?)",
+            (flow["id"], target_id, status_id, stopped))
+        run_id = cur.lastrowid
+        # 寫 evidence（全 PASS -> 一條，記錄判斷）
+        self.conn.execute(
+            "INSERT INTO evidence (target_id, detail)"
+            " VALUES (?, ?)",
+            (target_id, f"sweep_prove run={run_id} status={status_id}"
+                       f" steps={len(judged)}"))
+        self.conn.commit()
+        status_meta = "approved" if status_id == 1 else "rejected"
+        return {"run_id": run_id, "status_id": status_id,
+                "status": status_meta, "steps": judged}
 
     # ---------------- 字典查詢 ----------------
     def actions(self):
@@ -233,10 +459,13 @@ class SqlStore:
                    LEFT JOIN physical_type pt ON pt.id = t.physical_type_id
                    ORDER BY t.id""")]
         # version 字典喺 version.db（跨 DB 唔可以 join，用 code 補名）
+        # 2026-10-27：version 表改名 registry（value_id -> value.value）
         try:
             import sqlite3 as _s
             _v = _s.connect(r"C:\projects\meta\version\version.db")
-            _vm = {r[0]: r[1] for r in _v.execute("SELECT id, version FROM version")}
+            _vm = {r[0]: r[1] for r in _v.execute(
+                "SELECT r.id, v.value FROM registry r"
+                " LEFT JOIN value v ON v.id = r.value_id")}
             _v.close()
             for row in rows:
                 row["source_version"] = _vm.get(row.get("source_version_id"))
@@ -284,18 +513,23 @@ class SqlStore:
             raise ValueError(f"target 唔存在: {resource_id}（要嘅話先 analyze）")
         src = tgt = None
         # version 字典喺 version.db（跨 DB 要開另一條連線）
+        # 2026-10-27：version 表改名 registry（value_id -> value.value）
         if source_version or target_version:
             import sqlite3 as _s
             _v = _s.connect(r"C:\projects\meta\version\version.db")
             try:
                 if source_version:
                     row_v = _v.execute(
-                        "SELECT id FROM version WHERE version = ?",
+                        "SELECT r.id FROM registry r"
+                        " JOIN value v ON v.id = r.value_id"
+                        " WHERE v.value = ?",
                         (source_version,)).fetchone()
                     src = row_v[0] if row_v else None
                 if target_version:
                     row_v = _v.execute(
-                        "SELECT id FROM version WHERE version = ?",
+                        "SELECT r.id FROM registry r"
+                        " JOIN value v ON v.id = r.value_id"
+                        " WHERE v.value = ?",
                         (target_version,)).fetchone()
                     tgt = row_v[0] if row_v else None
             finally:
@@ -316,10 +550,13 @@ class SqlStore:
             "SELECT * FROM target WHERE plan_status = 'pending'"
             " AND plan_action IS NOT NULL ORDER BY id")]
         # 補 version 名（version 字典喺 version.db）
+        # 2026-10-27：version 表改名 registry（value_id -> value.value）
         try:
             import sqlite3 as _s
             _v = _s.connect(r"C:\projects\meta\version\version.db")
-            _vm = {r[0]: r[1] for r in _v.execute("SELECT id, version FROM version")}
+            _vm = {r[0]: r[1] for r in _v.execute(
+                "SELECT r.id, v.value FROM registry r"
+                " LEFT JOIN value v ON v.id = r.value_id")}
             _v.close()
             for row in rows:
                 row["source_version"] = _vm.get(row.get("source_version_id"))

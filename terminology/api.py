@@ -46,6 +46,32 @@ class Terminology:
     def count(self):
         return self.store.count()
 
+    def add_value(self, value, taxonomy_id=None):
+        """新增 / 攞一個提交值嘅 id（冪等；taxonomy_id = 邊個 module 登記）"""
+        return self.store.add_value(value, taxonomy_id=taxonomy_id)
+
+    def values(self, limit=50):
+        """列出 value 表（含 taxonomy_id + module 名，由 taxonomy.db 查）"""
+        rows = [dict(r) for r in self.store.conn.execute(
+            "SELECT id, value, taxonomy_id FROM value"
+            " ORDER BY id DESC LIMIT ?", (limit,))]
+        # module 名：taxonomy.db registry JOIN
+        try:
+            import sqlite3 as _sq
+            tc = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            tc.row_factory = _sq.Row
+            try:
+                mods = {r["id"]: r["meta"] for r in tc.execute(
+                    "SELECT id, meta FROM registry"
+                    " WHERE tree_id = 2 AND is_active = 1")}
+            finally:
+                tc.close()
+        except Exception:
+            mods = {}
+        for d in rows:
+            d["module_name"] = mods.get(d.get("taxonomy_id"))
+        return rows
+
     # ---- data_collect ----
 
     def collect(self, resource_id, value):
@@ -174,15 +200,17 @@ class Terminology:
         return self.store.flow_steps(flow_name, active_only)
 
     def run_flow(self, flow_name, answers=None, value=None,
-                 value_id=None, save=True):
+                 value_id=None, save=True, role_id=None, rule_id=None):
         """行一個驗證鏈（線性，第一個 FAIL 就停）
 
         answers = {question_id: 原始答案}（operator / expected 由 DB 控制）
         value    = 提交去檢查嘅值（自動入 value 表）
+        role_id  = role.db registry.id（邊個角色執行，2026-10-27）
+        rule_id  = rule.db rule.id（跟邊條規則，2026-10-27e）
         全部 PASS -> status_id=1（approved）；第一個 FAIL -> 2（rejected）
         """
         return self.store.run_flow(flow_name, answers, value,
-                                   value_id, save)
+                                   value_id, save, 0, role_id, rule_id)
 
     def flow_runs(self, limit=20):
         """列出執行記錄（證明）"""
@@ -195,6 +223,62 @@ class Terminology:
         返回 {"registered", "word_category", "evidence", "source", "runs"}
         """
         return self.store.word_proof(word)
+
+    # ---------- source_register（2026-10-27：表話事，零 hardcode） ----------
+    def set_source_for_word(self, word, source_id, registered_by="api"):
+        """設定一個詞用邊個 source 證明（source_register 表，冪等）
+
+        source_id = source.db source.id（一定要存在）。
+        之後 source_register flow 會用呢個 source 登記新詞。
+        """
+        if not word or not source_id:
+            raise ValueError("word + source_id 必填")
+        # source_id 一定要存在
+        import sqlite3 as _sq
+        _c = _sq.connect(r"C:\projects\meta\source\source.db")
+        try:
+            has = _c.execute(
+                "SELECT 1 FROM source WHERE id = ?", (source_id,)).fetchone()
+        finally:
+            _c.close()
+        if not has:
+            raise ValueError(f"source_id={source_id} 唔存在（source.db 查無）")
+        self.store.conn.execute(
+            "INSERT INTO source_register"
+            " (word, source_id, registered_by)"
+            " SELECT ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM source_register WHERE LOWER(word) = LOWER(?))",
+            (str(word).lower(), source_id, registered_by, word))
+        self.store.conn.execute(
+            "UPDATE source_register SET source_id = ?,"
+            " registered_by = ?, updated_at = datetime('now','localtime')"
+            " WHERE LOWER(word) = LOWER(?)",
+            (source_id, registered_by, word))
+        self.store.conn.commit()
+        r = self.store.conn.execute(
+            "SELECT id FROM source_register WHERE LOWER(word) = LOWER(?)",
+            (word,)).fetchone()
+        return r["id"] if r else None
+
+    def source_register_rows(self, active_only=True):
+        """列出 source_register 全部（word -> source 選擇）"""
+        sql = "SELECT * FROM source_register WHERE 1=1"
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.store.conn.execute(sql)]
+
+    def get_source(self, word=None):
+        """一個詞用邊個 source（source_register 表話事；冇 word = 後備 source）"""
+        return self.store.get_source(word)
+
+    def verify_source(self, word):
+        """驗證一個詞嘅 source 證明（有冇效）"""
+        return self.store.source_proof_of(word)
+
+    def proof_source(self, word):
+        """證明一個詞嘅 source（行 source_register flow 登記；返 word_proof 全貌）"""
+        return self.word_proof(word)
 
     def close(self):
         self.store.close()

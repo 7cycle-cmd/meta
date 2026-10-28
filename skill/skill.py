@@ -37,5 +37,9 @@ class SkillStore:
             (meta_key,)).fetchone()
         return r["id"] if r else None
 
+    
+    def count(self):
+        return self.conn.execute("SELECT COUNT(*) c FROM skill").fetchone()["c"]
+
     def close(self):
         self.conn.close()

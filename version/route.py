@@ -2,7 +2,9 @@
 
 用法：
     python -m version.route booleans      列出 yes/no 值表（0 = 否 / 1 = 是）
-    python -m version.route versions      列出版本
+    python -m version.route versions      列出註冊版本（registry）
+    python -m version.route registries    列出 registry 原始行
+    python -m version.route values        列出版本值（value 表）
     python -m version.route githubs       列出 GitHub 操作記錄
     python -m version.route ignores       列出忽略規則（yes/no）
     python -m version.route gitignore     由 github_ignore 表生成 .gitignore
@@ -57,13 +59,18 @@ def main(argv=None):
         return _simple("booleans")
     if cmd == "versions":
         return _simple("list")
+    if cmd == "registries":
+        return _simple("registries")
+    if cmd == "values":
+        return _simple("values")
     if cmd == "githubs":
         return _simple("githubs")
     if cmd == "ignores":
         return _ignores()
     if cmd == "gitignore":
         return _gitignore()
-    print("python -m version.route <booleans|versions|githubs|ignores|gitignore>")
+    print("python -m version.route <booleans|versions|registries|values|"
+          "githubs|ignores|gitignore>")
     return 0
 
 

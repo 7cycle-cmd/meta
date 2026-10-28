@@ -2,7 +2,7 @@
 
 呢個 module 嘅核心邏輯全部喺 api.py class 方法內（真實業務邏輯）：
 
-    Schema: check_environment, is_ready, proceed_mission, check_module, checks
+    Schema: add_registry, registries, check_schema, count
 
 （8 檔標準：__init__/function/api/route/schema/sql/registry/rest_api 全部 required）
 呢個檔案係業務邏輯嘅「統一入口標記」—— class 方法 = 業務邏輯，

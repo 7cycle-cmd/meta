@@ -67,6 +67,7 @@ VALUE_DDL = """
 CREATE TABLE IF NOT EXISTS value (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     value       TEXT,
+    taxonomy_id INTEGER,             -- taxonomy.registry.id（邊個 module 登記，2026-10-27）
     created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 """
@@ -91,6 +92,8 @@ CREATE TABLE IF NOT EXISTS run (
     answer_id  INTEGER NOT NULL,        -- 最終答案（1=真 2=假），由 status 推
     expected_id INTEGER NOT NULL,       -- 期望值（expected.id，flow 嘅最終期望）
     evidence_id INTEGER,                -- 證據鏈頭（evidence.id；FAIL run = NULL）
+    role_id    INTEGER,                 -- role.db registry.id（邊個角色執行，2026-10-27）
+    rule_id    INTEGER,                 -- rule.db rule.id（跟邊條規則，2026-10-27e）
     is_active  BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
@@ -249,9 +252,29 @@ CREATE TABLE IF NOT EXISTS word_category (
 );
 """
 
+# source_register 表：詞 → source 登記選擇（2026-10-27 用戶要求）
+#   一行 = 一個詞用邊個 source 證明（由表話事，零 hardcode）
+#   id            = 登記行 id
+#   word          = 詞（細楷）
+#   source_id     = source.db source.id（證明來源）
+#   registered_by = 邊個 caller 登記（terminology.source_register / api）
+#   run_id        = source flow run.id（批准嗰次驗證）
+SOURCE_REGISTER_DDL = """
+CREATE TABLE IF NOT EXISTS source_register (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    word          TEXT    NOT NULL UNIQUE,  -- 詞（細楷）
+    source_id     INTEGER NOT NULL,          -- source.db source.id
+    registered_by TEXT,                       -- 邊個 caller 登記
+    run_id        INTEGER,                    -- source run.id（可選）
+    is_active     BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
 __all__ = ["INDUSTRY_DDL", "EVIDENCE_DDL",
            "CONDITION_DDL", "W5H2_DDL", "VALUE_DDL", "RUN_DDL", "FLOW_DDL", "STEP_DDL",
            "FLOW_BRANCH_DDL", "NEXT_FLOW_DDL",
            "EXPECTED_DDL", "OPERATOR_DDL", "ANSWER_DDL", "BOOLEAN_DDL",
            "QUESTION_DDL", "SEQ_DDL", "STATUS_DDL", "REGISTRY_DDL",
-           "WORD_CATEGORY_DDL"]
+           "WORD_CATEGORY_DDL", "SOURCE_REGISTER_DDL"]

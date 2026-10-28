@@ -111,4 +111,67 @@ CREATE TABLE IF NOT EXISTS mission_log (
     created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 """
-__all__ = ['ACTION_DDL', 'STATUS_DDL', 'RESOURCE_TYPE_DDL', 'PHYSICAL_TYPE_DDL', 'TARGET_DDL', 'MISSION_DDL', 'MISSION_RUN_DDL', 'EVIDENCE_DDL', 'PROOF_DDL', 'MISSION_LOG_DDL']
+
+# ============ flow / condition / step / run（2026-10-27 用戶要求：sweep 加 flow） ============
+# 跟 terminology pattern —— 判斷入表（condition），執行有證明（run）。
+# 每個 target 嘅狀態判斷（empty/dead/legacy/orphan/active）變 condition，
+# sweep_prove flow 自動行，寫 run + evidence。
+
+CONDITION_DDL = """
+CREATE TABLE IF NOT EXISTS condition (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    meta       TEXT    NOT NULL UNIQUE,   -- sweep_empty / sweep_dead / sweep_legacy / sweep_orphan / sweep_active
+    is_active  BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+FLOW_DDL = """
+CREATE TABLE IF NOT EXISTS flow (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_name  TEXT    NOT NULL UNIQUE,   -- sweep_prove
+    is_active  BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+STEP_DDL = """
+CREATE TABLE IF NOT EXISTS step (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id        INTEGER NOT NULL,       -- flow.id
+    condition_id   INTEGER NOT NULL,        -- condition.id
+    seq_id         INTEGER NOT NULL,        -- 次序
+    is_active      BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (flow_id, seq_id)
+);
+"""
+
+RUN_DDL = """
+CREATE TABLE IF NOT EXISTS run (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_id     INTEGER NOT NULL,           -- flow.id
+    target_id   INTEGER NOT NULL,           -- sweep target.id（證明邊個目標）
+    status_id   INTEGER NOT NULL,           -- 1=approved 2=rejected（boolean）
+    step_id     INTEGER,                    -- 停步（全 PASS = 最後一步）
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# sweep 條件種子：狀態判斷（2026-10-27 用戶要求）
+# sweep_unproven = 有實體但冇證明記錄（worker build 咗但忘記記錄，2026-10-27b）
+DEFAULT_CONDITIONS = [
+    "sweep_empty",
+    "sweep_dead",
+    "sweep_legacy",
+    "sweep_orphan",
+    "sweep_unproven",
+    "sweep_active",
+]
+
+__all__ = ['ACTION_DDL', 'STATUS_DDL', 'RESOURCE_TYPE_DDL', 'PHYSICAL_TYPE_DDL',
+           'TARGET_DDL', 'MISSION_DDL', 'MISSION_RUN_DDL', 'EVIDENCE_DDL',
+           'PROOF_DDL', 'MISSION_LOG_DDL',
+           'CONDITION_DDL', 'FLOW_DDL', 'STEP_DDL', 'RUN_DDL',
+           'DEFAULT_CONDITIONS']

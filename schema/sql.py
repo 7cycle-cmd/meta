@@ -2,20 +2,21 @@
 
 schema = 環境檢查層：mission 之前要過 schema 檢查（環境 ready 先可以做 mission）
 
-    schema_check 表 = 每次檢查記錄（task_id | check_name | check_type | passed | detail）
-    schema_run   表 = 每次 schema 執行（task_id | total | passed | failed | status）
+2026-10-27（用戶要求 redesign）：
+    schema_check / schema_run 表已移除（drop）
+    -> 新 registry 表：run_id 由 terminology 產生（全站 flow 引擎）
 
-檢查類型（check_type）：
-    api_exists     = 要 call N 個 site，有冇 N 個 api？（registry type_id=4）
-    value_active   = value 係咪 active？（registry type_id=11 is_active=1）
-    value_broken   = value 會唔會 broken？（有冇對應 db_field / lineage）
-    value_missing  = value 係咪 missing？（要 build + proof 先可以做 mission）
+registry 表：
+    run_id                 = terminology.run.id（flow 產生）
+    plan_id                = sweep.target.id（value_id + condition_id 喺 run_id）
+    skill_id               = skill.id
+    resource_formula_id    = 資源 formula（未註冊）
+    resource_structure_id  = 資源 structure（未註冊）
 
 用法：
     from schema.sql import SqlStore
     s = SqlStore()
-    s.add_check(task_id=1, check_name="api_exists", check_type="api_exists",
-                passed=1, detail="10/10 api 存在")
+    s.add_registry(run_id=1, plan_id=2, skill_id=3)
     s.close()
 """
 
@@ -26,58 +27,86 @@ from .schema import *  # noqa: F401,E402
 DB_PATH = r"C:\projects\meta\schema\schema.db"
 
 
-
-
 class SqlStore:
     def __init__(self, db_path=DB_PATH):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute(SCHEMA_CHECK_DDL)
-        self.conn.execute(SCHEMA_RUN_DDL)
+        self._migrate_drop_old_tables()
+        self.conn.execute(REGISTRY_DDL)
         self.conn.commit()
 
-    # ---------- schema_check ----------
-    def add_check(self, task_id, check_name, check_type, passed, detail=None):
+    def _migrate_drop_old_tables(self):
+        """遷移（幂等）：drop 舊 schema_check / schema_run 表（2026-10-27）
+
+        用戶要求：remove -> table : scheme_check and scheme_run
+        另外：舊 registry 表（meta 字典，registry.py 建立）同新 registry
+        表（run_id 設計）撞名 -> 舊表有 meta 欄 = 舊版，drop 重建。
+        """
+        for t in ("schema_check", "schema_run"):
+            has = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (t,)).fetchone()
+            if has:
+                self.conn.execute(f"DROP TABLE {t}")
+                self.conn.commit()
+                print(f"[schema] drop 舊表 {t}")
+        # 舊 registry（meta 字典）-> drop（新 registry 表 run_id 設計）
+        has = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='registry'").fetchone()
+        if has:
+            cols = {c[1] for c in self.conn.execute(
+                "PRAGMA table_info('registry')")}
+            if "run_id" not in cols:
+                self.conn.execute("DROP TABLE registry")
+                self.conn.commit()
+                print("[schema] drop 舊 registry 表（meta 字典）")
+
+    # ---------- registry ----------
+    def add_registry(self, run_id, plan_id=None, skill_id=None,
+                     resource_formula_id=None, resource_structure_id=None):
+        """登記一次 schema 檢查（冪等：run_id 唯一）
+
+        run_id = terminology.run.id（全站 flow 引擎產生）
+        """
         cur = self.conn.execute(
-            "INSERT INTO schema_check (task_id, check_name, check_type, passed, detail)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (task_id, check_name, check_type, 1 if passed else 0, detail))
+            "INSERT INTO registry"
+            " (run_id, plan_id, skill_id, resource_formula_id,"
+            "  resource_structure_id)"
+            " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM registry WHERE run_id = ?)",
+            (run_id, plan_id, skill_id, resource_formula_id,
+             resource_structure_id, run_id))
         self.conn.commit()
-        return cur.lastrowid
+        if cur.rowcount:
+            return cur.lastrowid
+        r = self.conn.execute(
+            "SELECT id FROM registry WHERE run_id = ?", (run_id,)).fetchone()
+        return r["id"] if r else None
 
-    def checks(self, task_id=None, limit=100):
-        sql = "SELECT * FROM schema_check WHERE is_active = 1"
-        params = []
-        if task_id is not None:
-            sql += " AND task_id = ?"
-            params.append(task_id)
+    def registries(self, run_id=None, plan_id=None, skill_id=None,
+                   active_only=True, limit=100):
+        """列出 schema 檢查（可按 run / plan / skill 篩選）"""
+        sql = "SELECT * FROM registry WHERE 1=1"
+        args = []
+        if run_id is not None:
+            sql += " AND run_id = ?"
+            args.append(run_id)
+        if plan_id is not None:
+            sql += " AND plan_id = ?"
+            args.append(plan_id)
+        if skill_id is not None:
+            sql += " AND skill_id = ?"
+            args.append(skill_id)
+        if active_only:
+            sql += " AND is_active = 1"
         sql += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-        return [dict(r) for r in self.conn.execute(sql, params)]
-
-    # ---------- schema_run ----------
-    def add_run(self, task_id, total, passed, failed):
-        status = "ready" if failed == 0 else "not_ready"
-        cur = self.conn.execute(
-            "INSERT INTO schema_run (task_id, total, passed, failed, status)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (task_id, total, passed, failed, status))
-        self.conn.commit()
-        return cur.lastrowid
-
-    def runs(self, task_id=None, limit=20):
-        sql = "SELECT * FROM schema_run"
-        params = []
-        if task_id is not None:
-            sql += " WHERE task_id = ?"
-            params.append(task_id)
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-        return [dict(r) for r in self.conn.execute(sql, params)]
+        args.append(limit)
+        return [dict(r) for r in self.conn.execute(sql, args)]
 
     def count(self):
         return self.conn.execute(
-            "SELECT COUNT(*) FROM schema_check WHERE is_active = 1").fetchone()[0]
+            "SELECT COUNT(*) FROM registry WHERE is_active = 1").fetchone()[0]
 
     def commit(self):
         self.conn.commit()

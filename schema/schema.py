@@ -1,31 +1,31 @@
 """schema.py — schema 權威 DDL 入口（唯一 schema 來源）
 
-由 sql.py 搬遷：SCHEMA_CHECK_DDL, SCHEMA_RUN_DDL
-（7 檔標準：__init__/function/api/route/schema/sql/skill）
+由 sql.py 搬遷：REGISTRY_DDL
+（8 檔標準：__init__/function/api/route/schema/sql/registry/rest_api）
+
+2026-10-27（用戶要求 redesign）：
+    schema_check / schema_run 表已移除（drop）
+    -> 新 registry 表：run_id 由 terminology 產生（全站 flow 引擎）
 """
 
-SCHEMA_CHECK_DDL = """
-CREATE TABLE IF NOT EXISTS schema_check (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id     INTEGER NOT NULL,          -- task.db task.id（邊個 task 要檢查）
-    check_name  TEXT    NOT NULL,          -- 檢查名（api_exists / value_active ...）
-    check_type  TEXT    NOT NULL,          -- 檢查類型（api_exists / value_active / value_broken / value_missing）
-    passed      INTEGER NOT NULL,          -- 1 = 通過，0 = 失敗
-    detail      TEXT,                      -- 詳細（例如 10/10 api 存在）
-    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+# registry 表：schema 執行登記（2026-10-27 用戶要求 redesign）
+#   一行 = 一個 schema 檢查（run_id 由 terminology flow 產生）
+#   run_id                 = terminology.run.id（全站 flow 引擎產生）
+#   plan_id                = sweep.target.id（value_id + condition_id 喺 run_id）
+#   skill_id               = skill.id（邊個技能）
+#   resource_formula_id    = 資源 formula（未註冊，等 terminology 註冊 taxonomy + structure）
+#   resource_structure_id  = 資源 structure（未註冊，等 terminology 註冊 taxonomy + structure）
+REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS registry (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id                 INTEGER NOT NULL,  -- terminology.run.id（flow 產生）
+    plan_id                INTEGER,           -- sweep.target.id
+    skill_id               INTEGER,           -- skill.id
+    resource_formula_id    INTEGER,           -- 資源 formula（未註冊）
+    resource_structure_id  INTEGER,           -- 資源 structure（未註冊）
+    is_active              BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at             TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at             TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 """
-
-SCHEMA_RUN_DDL = """
-CREATE TABLE IF NOT EXISTS schema_run (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id     INTEGER NOT NULL,          -- task.db task.id
-    total       INTEGER NOT NULL,          -- 總檢查數
-    passed      INTEGER NOT NULL,          -- 通過數
-    failed      INTEGER NOT NULL,          -- 失敗數
-    status      TEXT    NOT NULL,          -- ready / not_ready
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
-);
-"""
-__all__ = ['SCHEMA_CHECK_DDL', 'SCHEMA_RUN_DDL']
+__all__ = ['REGISTRY_DDL']

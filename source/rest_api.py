@@ -18,6 +18,25 @@
 用法：
     python -m source.api_server [--port 8100]
 """
+import sys
+
+# ---- ast shadow 保衛（2026-10-27 fix）----
+# C:\projects\meta\ast\ 資料夾 shadow 咗標準庫 ast -> traceback.print_exc()
+# 內部 ast.parse() 崩潰 -> HTTP connection 被切斷（連 error JSON 都收唔到）。
+# 喺其他地方 import traceback 之前，確保 sys.modules['ast'] = 標準庫 ast。
+_ast_mod = sys.modules.get("ast")
+if _ast_mod is None or (getattr(_ast_mod, "__file__", "") or "").startswith(r"C:\projects\meta"):
+    _keep = [p for p in sys.path if p not in ("", r"C:\projects\meta")]
+    _save = sys.path[:]
+    try:
+        sys.path = _keep
+        import ast as _stdlib_ast
+        sys.modules["ast"] = _stdlib_ast
+    except Exception:
+        pass
+    finally:
+        sys.path = _save
+
 
 import argparse
 import json

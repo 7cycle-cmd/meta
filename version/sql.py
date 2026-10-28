@@ -2,17 +2,21 @@
 
 表：
     boolean        yes/no 值表（0 = 否 / 1 = 是）—— 本 DB 自有
-    version        版本字典
+    value          版本值表（版本字串，例如 1.4.0）
+    registry       版本註冊表（id | pass_id | value_id | github_id）
     github_action  GitHub 動作字典（commit / push）
     github_status  GitHub 狀態字典（pending / done / failed）
     github_ignore  GitHub 忽略規則（pattern + boolean_id -> boolean.id）
     github         一次 GitHub 操作記錄
+
+2026-10-27（用戶要求）：version 表 -> rename -> registry
 """
 
 import sqlite3
 
 from .schema import (BOOLEAN_DDL, GITHUB_ACTION_DDL, GITHUB_DDL,
-                     GITHUB_IGNORE_DDL, GITHUB_STATUS_DDL, VERSION_DDL)
+                     GITHUB_IGNORE_DDL, GITHUB_STATUS_DDL, REGISTRY_DDL,
+                     VALUE_DDL)
 
 DB_PATH = r"C:\projects\meta\version\version.db"
 # .gitignore 位置（repo root）
@@ -79,7 +83,9 @@ class SqlStore:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute(BOOLEAN_DDL)      # yes/no 值表（本 DB 自己）
-        self.conn.execute(VERSION_DDL)
+        self.conn.execute(VALUE_DDL)        # 版本值表（版本字串）
+        self._migrate_version_to_registry()  # 舊 version 表 -> registry
+        self.conn.execute(REGISTRY_DDL)     # 版本註冊表
         self.conn.execute(GITHUB_ACTION_DDL)
         self.conn.execute(GITHUB_STATUS_DDL)
         self.conn.execute(GITHUB_IGNORE_DDL)
@@ -88,6 +94,46 @@ class SqlStore:
         self._migrate_github()    # 舊 TEXT status -> FK
         self.conn.execute(GITHUB_DDL)
         self.conn.commit()
+
+    def _migrate_version_to_registry(self):
+        """遷移（幂等）：version -> registry（2026-10-27 用戶要求 rename）
+
+        舊 version（id | version）-> value（版本字串）+ registry
+        （id | pass_id | value_id | github_id）。
+        保留 id（github.version_id 仍然指同一 id，唔使改）。
+        """
+        has_old = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='version'"
+        ).fetchone()
+        if not has_old:
+            return  # 已新版（registry）
+        has_new = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='registry'"
+        ).fetchone()
+        if has_new:
+            n = self.conn.execute("SELECT COUNT(*) FROM registry").fetchone()[0]
+            if n:
+                raise ValueError(
+                    "registry 表已存在且有資料，唔可以自動合併（需要人手處理）")
+            self.conn.execute("DROP TABLE registry")
+        # 舊 version 表 -> 暫存，再建新 registry（保 id）
+        self.conn.execute("ALTER TABLE version RENAME TO version_old")
+        self.conn.execute(REGISTRY_DDL)
+        rows = self.conn.execute(
+            "SELECT id, version FROM version_old ORDER BY id").fetchall()
+        for r in rows:
+            vid = self._value_id(r["version"])
+            self.conn.execute(
+                "INSERT INTO registry (id, value_id) VALUES (?, ?)",
+                (r["id"], vid))
+        self.conn.execute("DROP TABLE version_old")
+        # 重設 sqlite_sequence（保 id 連續，唔跳號）
+        self.conn.execute(
+            "UPDATE sqlite_sequence SET seq ="
+            " (SELECT COALESCE(MAX(id), 0) FROM registry)"
+            " WHERE name = 'registry'")
+        self.conn.commit()
+        print(f"[version] version -> registry（rename，保 {len(rows)} 行）")
 
     def _migrate_github(self):
         """遷移：舊 github.status（TEXT）-> github_status_id（FK，2026-10-27）
@@ -176,20 +222,70 @@ class SqlStore:
             "SELECT id FROM boolean WHERE value = ?", (value,)).fetchone()
         return row["id"] if row else None
 
-    # ---------------- version ----------------
+    # ---------------- value（版本值表）----------------
+    def _value_id(self, value):
+        """由版本字串攞 value.id（唔存在就登記，冪等）"""
+        self.conn.execute(
+            "INSERT INTO value (value) SELECT ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM value WHERE value = ?)", (value, value))
+        row = self.conn.execute(
+            "SELECT id FROM value WHERE value = ?", (value,)).fetchone()
+        return row["id"] if row else None
+
+    def values(self):
+        """列出全部版本值（value 表）"""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM value ORDER BY id")]
+
+    # ---------------- registry（版本註冊表）----------------
     def versions(self):
+        """列出註冊版本（registry JOIN value）"""
         return [dict(row) for row in self.conn.execute(
-            "SELECT id, version FROM version ORDER BY id")]
+            "SELECT r.id, v.value AS version, r.pass_id, r.value_id,"
+            " r.github_id, r.is_active, r.created_at, r.updated_at"
+            " FROM registry r"
+            " LEFT JOIN value v ON v.id = r.value_id"
+            " ORDER BY r.id")]
+
+    def registries(self, active_only=True):
+        """列出 registry 原始行（id | pass_id | value_id | github_id）"""
+        sql = "SELECT * FROM registry WHERE 1=1"
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.conn.execute(sql)]
 
     def add_version(self, version):
+        """登記一個版本（冪等）—— value 存字串，registry 存註冊行
+
+        返回 registry.id
+        """
+        vid = self._value_id(version)
+        if vid is None:
+            return None
         self.conn.execute(
-            "INSERT INTO version (version)"
-            " SELECT ? WHERE NOT EXISTS (SELECT 1 FROM version WHERE version = ?)",
-            (version, version))
+            "INSERT INTO registry (value_id) SELECT ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM registry WHERE value_id = ?)", (vid, vid))
         self.conn.commit()
         row = self.conn.execute(
-            "SELECT id FROM version WHERE version = ?", (version,)).fetchone()
+            "SELECT id FROM registry WHERE value_id = ?", (vid,)).fetchone()
         return row["id"] if row else None
+
+    def set_registry_github(self, registry_id, github_id):
+        """連結 registry 行 -> github 操作記錄（github.id）"""
+        self.conn.execute(
+            "UPDATE registry SET github_id = ?,"
+            " updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (github_id, registry_id))
+        self.conn.commit()
+
+    def set_registry_pass(self, registry_id, pass_id):
+        """設定 registry 行嘅期望值（pass_id = expected.id）"""
+        self.conn.execute(
+            "UPDATE registry SET pass_id = ?,"
+            " updated_at = datetime('now', 'localtime') WHERE id = ?",
+            (pass_id, registry_id))
+        self.conn.commit()
 
     # ---------------- github_action（字典）----------------
     def github_actions(self, active_only=True):
@@ -225,11 +321,12 @@ class SqlStore:
     def githubs(self, active_only=True):
         """列出 GitHub 操作記錄（帶 action / status / version 名）"""
         sql = ("SELECT g.*, a.meta AS action, s.meta AS status,"
-               " v.version AS version"
+               " v.value AS version"
                " FROM github g"
                " LEFT JOIN github_action a ON a.id = g.github_action_id"
                " LEFT JOIN github_status s ON s.id = g.github_status_id"
-               " LEFT JOIN version v ON v.id = g.version_id"
+               " LEFT JOIN registry r ON r.id = g.version_id"
+               " LEFT JOIN value v ON v.id = r.value_id"
                " WHERE 1=1")
         if active_only:
             sql += " AND g.is_active = 1"
@@ -262,8 +359,12 @@ class SqlStore:
             " (github_session_id, github_action_id, github_status_id,"
             "  version_id) VALUES (?, ?, ?, ?)",
             (github_session_id, aid, sid, vid))
+        gid = cur.lastrowid
+        # 反向連結：registry.github_id -> github.id（用戶要求嘅 4 欄之一）
+        if vid is not None:
+            self.set_registry_github(vid, gid)
         self.conn.commit()
-        return cur.lastrowid
+        return gid
 
     def set_github_status(self, github_id, status):
         """更新操作狀態（pending / done / failed，meta 名）"""
