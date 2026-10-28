@@ -251,6 +251,56 @@ CREATE TABLE IF NOT EXISTS status (
 );
 """
 
+# ============ step_output / expected_source（2026-10-28 用戶設計）============
+# step_input = 輸入測量（condition × 5W2H 7 維度）
+# step_output = 輸出測量：每步實際輸出（expert_id 判斷 + value 1,0）
+#
+# expected_source：期望值來源（Table-driven，blackbox code = formula）
+#   question_id   = terminology.question.id
+#   formula_id    = template.formula.id（執行 blackbox 公式 -> 得到期望 value）
+#   formula_cutter_id = template.formula_cuter.id（公式切粒定位，improve 用）
+#   value         = 期望值（formula 執行結果 / 直接值）
+#   output_format = 輸出格式（預設 '1,0'：boolean 化）
+# 鏈：value -> condition_id * 5W2H * operator(yes>==, no>!=)
+#           -> expected_source -> output_format = 1,0
+EXPECTED_SOURCE_DDL = """
+CREATE TABLE IF NOT EXISTS expected_source (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id       INTEGER NOT NULL,      -- terminology.question.id
+    formula_id        INTEGER,               -- template.formula.id（blackbox 來源）
+    formula_cutter_id INTEGER,               -- template.formula_cuter.id（切粒定位，可選）
+    value             TEXT,                   -- 期望值（formula 執行結果 / 直接值）
+    output_format     TEXT NOT NULL DEFAULT '1,0',  -- 輸出格式（1,0 boolean）
+    is_active         BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (question_id, formula_id)
+);
+"""
+
+# step_output：每步實際輸出記錄
+#   step_id     = terminology.step.id
+#   run_id      = terminology.run.id（邊次執行）
+#   question_id = question.id
+#   expert_id   = 邊個判斷（identity / skill 可選）
+#   expected_id = expected.id（期望 1/0，由 expected_source 推）
+#   value       = 實際輸出 1,0（output_format 化）
+STEP_OUTPUT_DDL = """
+CREATE TABLE IF NOT EXISTS step_output (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    step_id       INTEGER NOT NULL,          -- terminology.step.id
+    run_id        INTEGER NOT NULL,          -- terminology.run.id
+    question_id   INTEGER NOT NULL,          -- question.id
+    expert_id     INTEGER,                   -- 邊個判斷（identity / skill.id）
+    expected_id   INTEGER,                   -- expected.id（期望 1/0）
+    value         INTEGER NOT NULL CHECK (value IN (0,1)),  -- 實際輸出 1,0
+    output_format TEXT    NOT NULL DEFAULT '1,0',
+    is_active     BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (run_id, step_id, question_id)
+);
+"""
+
 # ============ 詞彙分類（word_category）============
 # 2026-10-24s（用戶要求）：每個 word 一行，多欄分類。
 # 判斷結果由 question 引擎產生（english / speech / symbol / INT / single_word），
@@ -295,6 +345,7 @@ CREATE TABLE IF NOT EXISTS source_register (
 __all__ = ["INDUSTRY_DDL", "EVIDENCE_DDL",
            "CONDITION_DDL", "W5H2_DDL", "VALUE_DDL", "RUN_DDL", "FLOW_DDL", "STEP_DDL",
            "STEP_INPUT_DDL",
+           "EXPECTED_SOURCE_DDL", "STEP_OUTPUT_DDL",
            "FLOW_BRANCH_DDL", "NEXT_FLOW_DDL",
            "EXPECTED_DDL", "OPERATOR_DDL", "ANSWER_DDL", "BOOLEAN_DDL",
            "QUESTION_DDL", "SEQ_DDL", "STATUS_DDL", "REGISTRY_DDL",

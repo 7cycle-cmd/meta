@@ -191,6 +191,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                     # 測量：每 flow 5W2H 7 維度完整度（2026-10-28 用戶設計）
                     name = qs.get("flow")
                     self._send(200, t.flow_completeness(name))
+                elif path == "/expected-sources":
+                    # 列出期望值來源（可 ?question_id= 篩選）
+                    qid = qs.get("question_id")
+                    self._send(200, {"rows": t.expected_sources(
+                        int(qid) if qid else None)})
+                elif path == "/step-outputs":
+                    # 列出實際輸出（可 ?run_id= / ?step_id= 篩選）
+                    rid = qs.get("run_id")
+                    sid = qs.get("step_id")
+                    self._send(200, {"rows": t.step_outputs(
+                        int(rid) if rid else None,
+                        int(sid) if sid else None)})
+                elif path == "/output-completeness":
+                    # 測量：每 flow 輸出完整度
+                    name = qs.get("flow")
+                    self._send(200, t.output_completeness(name))
                 elif path == "/run":
                     name = qs.get("flow", "spec")
                     value = qs.get("value")
@@ -318,6 +334,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                     else:
                         self._send(200, t.proof_source(
                             urllib.parse.unquote(word)))
+                elif path == "/expected-source":
+                    # 設定一條 question 嘅期望值來源（Table-driven）
+                    qid = qs.get("question_id")
+                    if not qid:
+                        self._send(400, {"error": "需要 ?question_id="})
+                    else:
+                        esid = t.set_expected_source(
+                            int(qid),
+                            int(qs["formula_id"]) if qs.get("formula_id")
+                            else None,
+                            int(qs["formula_cutter_id"])
+                            if qs.get("formula_cutter_id") else None,
+                            qs.get("value"),
+                            qs.get("output_format", "1,0"))
+                        self._send(200, {"expected_source_id": esid,
+                                         "rows": t.expected_sources(int(qid))})
                 else:
                     self._send(404, {"error": f"唔知 route: {path}"})
             finally:

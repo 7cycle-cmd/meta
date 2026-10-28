@@ -155,6 +155,33 @@ class Terminology:
         """測量：每條 flow 喺 5W2H 7 維度嘅完整度（2026-10-28 用戶設計）"""
         return self.store.flow_completeness(flow_name)
 
+    # ---------- expected_source / step_output（2026-10-28 用戶設計）----------
+
+    def set_expected_source(self, question_id, formula_id=None,
+                            formula_cutter_id=None, value=None,
+                            output_format="1,0"):
+        """設定一條 question 嘅期望值來源（Table-driven，冪等）"""
+        return self.store.set_expected_source(
+            question_id, formula_id, formula_cutter_id, value, output_format)
+
+    def expected_sources(self, question_id=None):
+        """列出 expected_source（可按 question 篩選）"""
+        return self.store.expected_sources(question_id)
+
+    def record_step_output(self, step_id, run_id, question_id, value,
+                           expert_id=None, output_format="1,0"):
+        """記錄一步嘅實際輸出（1,0）"""
+        return self.store.record_step_output(
+            step_id, run_id, question_id, value, expert_id, output_format)
+
+    def step_outputs(self, run_id=None, step_id=None):
+        """列出 step_output（可按 run / step 篩選）"""
+        return self.store.step_outputs(run_id, step_id)
+
+    def output_completeness(self, flow_name=None):
+        """測量：每條 flow 嘅輸出完整度"""
+        return self.store.output_completeness(flow_name)
+
     # ---------- flow_branch / next_flow（分支決策，0 hardcode） ----------
 
     def add_branch_rule(self, flow_name, condition_meta, status_id,

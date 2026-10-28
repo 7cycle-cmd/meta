@@ -81,6 +81,7 @@ class SqlStore:
             REGISTRY_DDL,
             CONDITION_DDL, W5H2_DDL, RUN_DDL, FLOW_DDL, STEP_DDL,
             STEP_INPUT_DDL,
+            EXPECTED_SOURCE_DDL, STEP_OUTPUT_DDL,
             FLOW_BRANCH_DDL, NEXT_FLOW_DDL,
             EXPECTED_DDL, OPERATOR_DDL, ANSWER_DDL, BOOLEAN_DDL,
             QUESTION_DDL, SEQ_DDL, STATUS_DDL,
@@ -512,6 +513,168 @@ class SqlStore:
                     [w.get(int(x), x) for x in (all_used - all_exp)], key=str),
             },
         }
+
+    # ============ expected_source / step_output（2026-10-28 用戶設計）============
+    # step_input = 輸入測量；step_output = 輸出測量。
+    # 鏈：value -> condition × 5W2H × operator(yes>==, no>!=)
+    #          -> expected_source -> output_format = 1,0
+
+    def set_expected_source(self, question_id, formula_id=None,
+                            formula_cutter_id=None, value=None,
+                            output_format="1,0"):
+        """設定一條 question 嘅期望值來源（Table-driven，冪等）
+
+        question_id       = terminology.question.id
+        formula_id        = template.formula.id（blackbox 公式，執行出期望）
+        formula_cutter_id = formula_cuter.id（切粒定位，improve 用）
+        value             = 期望值（formula 執行結果 / 直接值）
+        output_format     = 輸出格式（1,0 boolean）
+        """
+        # 已有 -> 更新
+        has = self.conn.execute(
+            "SELECT id FROM expected_source WHERE question_id = ?"
+            " AND formula_id IS ?", (question_id, formula_id)).fetchone()
+        if has:
+            self.conn.execute(
+                "UPDATE expected_source SET formula_cutter_id = ?,"
+                " value = ?, output_format = ?, updated_at ="
+                " datetime('now','localtime') WHERE id = ?",
+                (formula_cutter_id, value, output_format, has["id"]))
+            rid = has["id"]
+        else:
+            cur = self.conn.execute(
+                "INSERT INTO expected_source"
+                " (question_id, formula_id, formula_cutter_id, value,"
+                "  output_format)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (question_id, formula_id, formula_cutter_id, value,
+                 output_format))
+            rid = cur.lastrowid
+        self.conn.commit()
+        return rid
+
+    def expected_sources(self, question_id=None):
+        """列出 expected_source（可按 question 篩選）"""
+        sql = ("SELECT es.*, q.condition_id, q.\"5w2h_id\","
+               " c.meta AS condition_meta, w.meta AS w5w2h,"
+               " op.meta AS operator_meta, e.description AS expected_desc"
+               " FROM expected_source es"
+               " LEFT JOIN question q ON q.id = es.question_id"
+               " LEFT JOIN condition c ON c.id = q.condition_id"
+               ' LEFT JOIN "5W2H" w ON w.id = q."5w2h_id"'
+               " LEFT JOIN operator op ON op.id = q.operator_id"
+               " LEFT JOIN expected e ON e.id = q.expected_id")
+        args = ()
+        if question_id is not None:
+            sql += " WHERE es.question_id = ?"
+            args = (question_id,)
+        sql += " ORDER BY es.id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def record_step_output(self, step_id, run_id, question_id, value,
+                           expert_id=None, output_format="1,0"):
+        """記錄一步嘅實際輸出（2026-10-28 用戶設計）
+
+        step_id   = step.id
+        run_id    = run.id（邊次執行）
+        question_id = question.id
+        value     = 實際輸出（1 或 0，output_format 化）
+        expert_id = 邊個判斷（identity / skill.id）
+        冪等：UNIQUE(run_id, step_id, question_id)
+        """
+        # expected_id：由 question 攞（expected 1/0）
+        q = self.conn.execute(
+            "SELECT expected_id FROM question WHERE id = ?",
+            (question_id,)).fetchone()
+        exp_id = q["expected_id"] if q else None
+        v = 1 if str(value).strip().lower() in ("1", "true", "yes", "pass") \
+            else 0
+        self.conn.execute(
+            "INSERT INTO step_output"
+            " (step_id, run_id, question_id, expert_id, expected_id, value,"
+            "  output_format)"
+            " SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM step_output WHERE run_id = ?"
+            "  AND step_id = ? AND question_id = ?)",
+            (step_id, run_id, question_id, expert_id, exp_id, v,
+             output_format, run_id, step_id, question_id))
+        self.conn.commit()
+        return v
+
+    def step_outputs(self, run_id=None, step_id=None):
+        """列出 step_output（可按 run / step 篩選）"""
+        sql = ("SELECT so.*, s.seq_id, f.flow_name,"
+               " c.meta AS condition_meta, w.meta AS w5w2h,"
+               " e.description AS expected_desc"
+               " FROM step_output so"
+               " LEFT JOIN step s ON s.id = so.step_id"
+               " LEFT JOIN flow f ON f.id = s.flow_id"
+               " LEFT JOIN question q ON q.id = so.question_id"
+               " LEFT JOIN condition c ON c.id = q.condition_id"
+               ' LEFT JOIN "5W2H" w ON w.id = q."5w2h_id"'
+               " LEFT JOIN expected e ON e.id = so.expected_id")
+        args = ()
+        if run_id is not None:
+            sql += " WHERE so.run_id = ?"
+            args = (run_id,)
+        elif step_id is not None:
+            sql += " WHERE so.step_id = ?"
+            args = (step_id,)
+        sql += " ORDER BY so.id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def output_completeness(self, flow_name=None):
+        """測量：每條 flow 嘅輸出完整度（step_output / expected_source 對比）
+
+        回傳每 flow：
+          output_rows    = step_output 實際記錄咗幾行
+          expected_rows  = 應有幾多（step × expected_source）
+          missing        = 冇 expected_source 嘅 question
+          score_n/d/pct
+        """
+        q = ("SELECT f.id AS fid, f.flow_name,"
+             " COUNT(DISTINCT s.id) AS step_count,"
+             " COUNT(DISTINCT s.question_id) AS question_count"
+             " FROM flow f"
+             " LEFT JOIN step s ON s.flow_id = f.id AND s.is_active = 1"
+             " WHERE f.is_active = 1")
+        args = ()
+        if flow_name:
+            q += " AND f.flow_name = ?"
+            args = (flow_name,)
+        q += " GROUP BY f.id ORDER BY f.id"
+        rows = [dict(r) for r in self.conn.execute(q, args)]
+        out = []
+        for r in rows:
+            fid = r["fid"]
+            # 呢條 flow 用到嘅 questions
+            qids = [x[0] for x in self.conn.execute(
+                "SELECT DISTINCT q.id FROM step s"
+                " JOIN question q ON q.id = s.question_id"
+                " WHERE s.flow_id = ? AND s.is_active = 1", (fid,))]
+            # 有 expected_source 嘅（期望）
+            exp_ids = {x[0] for x in self.conn.execute(
+                "SELECT question_id FROM expected_source"
+                " WHERE is_active = 1")}
+            missing = [qid for qid in qids if qid not in exp_ids]
+            # 實際 output 行數
+            on = self.conn.execute(
+                "SELECT COUNT(*) c FROM step_output so"
+                " JOIN step s ON s.id = so.step_id"
+                " WHERE s.flow_id = ?", (fid,)).fetchone()["c"]
+            n = len(qids) - len(missing)
+            d = len(qids) or 1
+            out.append({
+                "flow_id": fid,
+                "flow": r["flow_name"],
+                "step_count": r["step_count"] or 0,
+                "question_count": r["question_count"] or 0,
+                "output_rows": on or 0,
+                "missing_expected": len(missing),
+                "score_n": n, "score_d": d,
+                "score_pct": round(100.0 * n / d, 1),
+            })
+        return {"flows": out}
 
     def _migrate_word_industry_evidence(self):
         """遷移（幂等）：word_industry -> 通用 evidence 表（2026-10-25）
