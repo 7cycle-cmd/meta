@@ -210,6 +210,10 @@ class Terminology:
         """監控：全站硬編碼值統計"""
         return self.store.hardcode_monitor()
 
+    def scan_hardcodes(self, module_name):
+        """AST 掃描一個 module：自動登記 hardcode_value（2026-10-28）"""
+        return self.store.scan_hardcodes(module_name)
+
     # ---------- flow_branch / next_flow（分支決策，0 hardcode） ----------
 
     def add_branch_rule(self, flow_name, condition_meta, status_id,

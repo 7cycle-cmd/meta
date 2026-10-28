@@ -775,6 +775,182 @@ class SqlStore:
         ).fetchone()["c"]
         return {"total": total, "by_package": by_pkg, "by_skill": by_skill}
 
+    def scan_hardcodes(self, module_name):
+        """AST 掃描一個 module：自動登記 hardcode_value（2026-10-28）
+
+        流程：
+            1. 掃 <META>/<module_name>/*.py 嘅 AST（標準庫 ast，唔係 cwd ast）
+            2. 每個 Constant 字面值（str/int）：
+               - 喺 structure.db db_field_option 允許值入面（任何真欄位）
+                 -> 唔係 hardcode（由 table 出）
+               - 唔喺 -> hardcode -> 登記：
+                   value_id    = value.db value（自動 add）
+                   package_id  = taxonomy.registry.id（module）
+                   file_id     = structure.module.id（file 層）
+                   taxonomy_id = taxonomy.registry.id（分類）
+                   skill_id    = skill.registry.id（skill，冇 -> None）
+            3. 冪等：hardcode_value UNIQUE + value add 都有 WHERE NOT EXISTS
+
+        返回 {"module", "values", "hardcodes", "files", "skipped"}
+        """
+        import os as _os
+        # 標準庫 ast（cwd 有 ast package shadow -> 直接 load 標準庫 ast.py）
+        import importlib.util as _ilu
+        _ast_sp = _ilu.spec_from_file_location(
+            "_stdlib_ast",
+            _os.path.join(_os.path.dirname(_os.__file__), "ast.py"))
+        _ast_m = _ilu.module_from_spec(_ast_sp)
+        _ast_sp.loader.exec_module(_ast_m)
+        _stdlib_ast = _ast_m
+        _meta_root = r"C:\projects\meta"
+
+        folder = _os.path.join(_meta_root, module_name)
+        if not _os.path.isdir(folder):
+            return {"module": module_name, "values": 0, "hardcodes": 0,
+                    "files": 0, "error": "資料夾唔存在"}
+        py_files = sorted(f for f in _os.listdir(folder)
+                          if f.endswith(".py") and not f.startswith("_"))
+
+        # 攞 structure / taxonomy / skill id
+        package_id, file_ids = self._scan_structure_ids(module_name)
+
+        # 允許值集合（structure.db db_field_option）
+        allowed = self._scan_allowed_values()
+
+        n_val = 0
+        n_hard = 0
+        skipped = []
+        for fn in py_files:
+            path = _os.path.join(folder, fn)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    tree = _stdlib_ast.parse(f.read(), filename=path)
+            except (SyntaxError, UnicodeDecodeError, OSError) as e:
+                skipped.append(f"{fn}: {e}")
+                continue
+            file_id = file_ids.get(fn)
+            # docstring = module/class/function 第一個 Constant 字串
+            docstrings = set()
+            for dnode in _stdlib_ast.walk(tree):
+                if isinstance(dnode, (_stdlib_ast.Module,
+                                      _stdlib_ast.FunctionDef,
+                                      _stdlib_ast.AsyncFunctionDef,
+                                      _stdlib_ast.ClassDef)):
+                    body = getattr(dnode, "body", [])
+                    if body and isinstance(body[0], _stdlib_ast.Expr) \
+                            and isinstance(body[0].value,
+                                           _stdlib_ast.Constant) \
+                            and isinstance(body[0].value.value, str):
+                        docstrings.add(id(body[0].value))
+            _sql_kw = ("select ", "insert ", "update ", "delete ",
+                       "create ", "drop ", "pragma ", "alter ", "attach ",
+                       "begin ", "commit", " rollback", " from ", " where ")
+            for node in _stdlib_ast.walk(tree):
+                if not isinstance(node, _stdlib_ast.Constant):
+                    continue
+                if id(node) in docstrings:
+                    continue
+                val = node.value
+                if isinstance(val, bool) or val is None:
+                    continue
+                if isinstance(val, int):
+                    continue  # int 太雜（行號/次數），唔當 hardcode 值
+                if not isinstance(val, str):
+                    continue
+                text = val.strip()
+                if len(text) < 2 or len(text) > 60:
+                    continue  # 太短/太長唔算硬編碼值
+                low = text.lower()
+                if low.startswith(_sql_kw) or any(k in low for k in
+                                                 (" from ", " where ",
+                                                  "select ", "insert ",
+                                                  "update ", "delete ")):
+                    continue  # SQL 字串 = code 本身，唔係資料值
+                if text in allowed:
+                    continue  # 表驅動（db_field_option 允許值）-> 唔係 hardcode
+                # 登記 value + hardcode（counter 跟實際插入，唔係掃描命中）
+                vid = self.add_value_from_scan(text)
+                if self._insert_hardcode(vid, package_id, file_id):
+                    n_hard += 1
+                n_val += 1
+        self.conn.commit()
+        return {"module": module_name, "values": n_val,
+                "hardcodes": n_hard, "files": len(py_files),
+                "skipped": skipped}
+
+    # ---------- scan_hardcodes helpers ----------
+    def _scan_structure_ids(self, module_name):
+        """攞 module 嘅 package_id + 每個 file 嘅 structure.module.id"""
+        import sqlite3 as _sq
+        package_id = None
+        file_ids = {}
+        # taxonomy.registry.id（tree = module）
+        try:
+            _c = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            _c.row_factory = _sq.Row
+            r = _c.execute(
+                "SELECT id FROM registry WHERE tree_id ="
+                " (SELECT id FROM tree WHERE meta_key = 'module')"
+                " AND meta = ?", (module_name,)).fetchone()
+            if r:
+                package_id = r["id"]
+            _c.close()
+        except Exception:
+            pass
+        # structure.db structure_module（type=file 層）
+        try:
+            _c = _sq.connect(r"C:\projects\meta\structure\structure.db")
+            _c.row_factory = _sq.Row
+            rows = _c.execute(
+                "SELECT sm.id, sm.value FROM structure_module sm"
+                " JOIN structure_type st ON st.id = sm.structure_type_id"
+                " WHERE st.value = 'file' AND sm.module_id = ?",
+                (package_id,)).fetchall() if package_id else []
+            for r in rows:
+                file_ids[r["value"]] = r["id"]
+            _c.close()
+        except Exception:
+            pass
+        return package_id, file_ids
+
+    def _scan_allowed_values(self):
+        """structure.db db_field_option 全部允許值（集合）"""
+        import sqlite3 as _sq
+        try:
+            _c = _sq.connect(r"C:\projects\meta\structure\structure.db")
+            vals = {r[0] for r in _c.execute(
+                "SELECT DISTINCT value FROM db_field_option")}
+            _c.close()
+            return vals
+        except Exception:
+            return set()
+
+    def add_value_from_scan(self, text, taxonomy_id=None):
+        """value.db add（冪等）—— 掃描到嘅字面值登記做 value"""
+        r = self.conn.execute(
+            "SELECT id FROM vdb.value WHERE value = ?", (text,)).fetchone()
+        if r:
+            return r["id"]
+        cur = self.conn.execute(
+            "INSERT INTO vdb.value (value, taxonomy_id) SELECT ?, ?"
+            " WHERE NOT EXISTS (SELECT 1 FROM vdb.value WHERE value = ?)",
+            (text, taxonomy_id, text))
+        self.conn.commit()
+        r2 = self.conn.execute(
+            "SELECT id FROM vdb.value WHERE value = ?", (text,)).fetchone()
+        return r2["id"] if r2 else cur.lastrowid
+
+    def _insert_hardcode(self, value_id, package_id, file_id):
+        """插入 hardcode row；返回 True = 實際插入（False = 已存在）"""
+        cur = self.conn.execute(
+            "INSERT INTO hardcode_value (value_id, package_id, file_id)"
+            " SELECT ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM hardcode_value WHERE value_id = ?"
+            " AND package_id IS ? AND file_id IS ?)",
+            (value_id, package_id, file_id, value_id, package_id, file_id))
+        self.conn.commit()
+        return cur.rowcount > 0
+
     def _migrate_word_industry_evidence(self):
         """遷移（幂等）：word_industry -> 通用 evidence 表（2026-10-25）
 

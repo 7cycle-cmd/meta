@@ -231,6 +231,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 elif path == "/hardcode-monitor":
                     # 監控：全站硬編碼統計
                     self._send(200, t.hardcode_monitor())
+                elif path == "/scan-hardcodes":
+                    # AST 掃描一個 module 自動登記 hardcode（2026-10-28）
+                    mod = qs.get("module")
+                    if not mod:
+                        self._send(400, {"error": "需要 ?module="})
+                    else:
+                        self._send(200, t.scan_hardcodes(mod))
                 elif path == "/add-hardcode":
                     # 標記硬編碼值（?value_id=&package_id=&file_id=&taxonomy_id=&skill_id=）
                     vid = qs.get("value_id")
