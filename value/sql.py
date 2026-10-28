@@ -15,9 +15,27 @@ class SqlStore:
             VALUE_DDL, SPLIT_TOTAL_DDL, SPLIT_VALUE_DDL, TERMINOLOGY_DDL,
         ]))
         self.conn.commit()
+        self._migrate_permit_id()
 
-    def add(self, value, taxonomy_id=None):
-        """新增 / 攞一個值嘅 id（冪等；taxonomy_id = 邊個 module 登記）"""
+    def _migrate_permit_id(self):
+        """遷移（幂等）：value + terminology 表加 permit_id 欄（2026-10-28b）
+
+        方案 B：一跳直達 —— value → permit_id → permit.db 確認有冇權。
+        """
+        for tbl in ("value", "terminology"):
+            cols = {c[1] for c in self.conn.execute(
+                f"PRAGMA table_info('{tbl}')")}
+            if "permit_id" not in cols:
+                self.conn.execute(
+                    f"ALTER TABLE {tbl} ADD COLUMN permit_id INTEGER")
+                self.conn.commit()
+                print(f"[value] {tbl} 表加 permit_id 欄")
+
+    def add(self, value, taxonomy_id=None, permit_id=None):
+        """新增 / 攞一個值嘅 id（冪等；taxonomy_id = 邊個 module 登記）
+
+        permit_id = permit.db permit.id（呢個值嘅授權，2026-10-28b）
+        """
         r = self.conn.execute(
             "SELECT id FROM value WHERE value IS ?", (value,)).fetchone()
         if r:
@@ -26,11 +44,17 @@ class SqlStore:
                     "UPDATE value SET taxonomy_id = ?"
                     " WHERE id = ? AND taxonomy_id IS NULL",
                     (taxonomy_id, r["id"]))
-                self.conn.commit()
+            if permit_id is not None:
+                self.conn.execute(
+                    "UPDATE value SET permit_id = ?"
+                    " WHERE id = ? AND permit_id IS NULL",
+                    (permit_id, r["id"]))
+            self.conn.commit()
             return r["id"]
         cur = self.conn.execute(
-            "INSERT INTO value (value, taxonomy_id) VALUES (?, ?)",
-            (value, taxonomy_id))
+            "INSERT INTO value (value, taxonomy_id, permit_id)"
+            " VALUES (?, ?, ?)",
+            (value, taxonomy_id, permit_id))
         self.conn.commit()
         return cur.lastrowid
 
@@ -142,21 +166,15 @@ class SqlStore:
             subject   = value.split_value.<id>（split_value 類型）
             permit    = call
             object    = terminology.<terminology_id>
+        同埋回填 permit_id（value + terminology 表，一點直達）
         """
-        # 1. 本地 terminology 表（保留記錄）
-        cur = self.conn.execute(
-            "INSERT INTO terminology (terminology_id, split_value_id)"
-            " SELECT ?, ? WHERE NOT EXISTS"
-            " (SELECT 1 FROM terminology"
-            "  WHERE terminology_id = ? AND split_value_id = ?)",
-            (terminology_id, split_value_id,
-             terminology_id, split_value_id))
-        # 2. permit.db（權威授權）
+        # 1. permit.db（權威授權）-> 攞 permit_id
+        permit_id = None
         try:
             from permit import Permit
             pm = Permit()
             try:
-                pm.add_permit(
+                permit_id = pm.add_permit(
                     f"value.split_value.{split_value_id}", "split_value",
                     "call",
                     f"terminology.{terminology_id}", "terminology")
@@ -164,6 +182,30 @@ class SqlStore:
                 pm.close()
         except Exception as e:
             print(f"[value] permit.db 寫入失敗（本地表照寫）: {e}")
+        # 2. 本地 terminology 表（保留記錄，帶 permit_id）
+        cur = self.conn.execute(
+            "INSERT INTO terminology (terminology_id, split_value_id,"
+            " permit_id)"
+            " SELECT ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM terminology"
+            "  WHERE terminology_id = ? AND split_value_id = ?)",
+            (terminology_id, split_value_id, permit_id,
+             terminology_id, split_value_id))
+        if cur.rowcount == 0 and permit_id is not None:
+            # 已有行 -> 補 permit_id
+            self.conn.execute(
+                "UPDATE terminology SET permit_id = ?"
+                " WHERE terminology_id = ? AND split_value_id = ?"
+                " AND permit_id IS NULL",
+                (permit_id, terminology_id, split_value_id))
+        # 3. value 表回填 permit_id（一跳直達）
+        if permit_id is not None:
+            self.conn.execute(
+                "UPDATE value SET permit_id = ?"
+                " WHERE id = (SELECT value_id FROM split_value"
+                "            WHERE id = ?)"
+                " AND (permit_id IS NULL OR permit_id = ?)",
+                (permit_id, split_value_id, permit_id))
         self.conn.commit()
         if cur.rowcount:
             return cur.lastrowid
@@ -192,8 +234,29 @@ class SqlStore:
         """一個拆分值有冇權 call terminology（冪等檢查）
 
         2026-10-28b：permit.db 係權威（subject × permit × object）；
+        一跳直達：value.permit_id（grant 時回填）快速確認，
         本地表 fallback（permit 未寫入時用本地記錄）。
         """
+        # 一跳直達：value.permit_id 有值 = 有權（grant 時回填）
+        row = self.conn.execute(
+            "SELECT v.permit_id FROM value v"
+            " JOIN split_value sv ON sv.value_id = v.id"
+            " WHERE sv.id = ?", (split_value_id,)).fetchone()
+        if row and row["permit_id"] is not None:
+            try:
+                from permit import Permit
+                pm = Permit()
+                try:
+                    ok = pm.can(
+                        f"value.split_value.{split_value_id}", "split_value",
+                        "call",
+                        f"terminology.{terminology_id}", "terminology")
+                    if ok:
+                        return True
+                finally:
+                    pm.close()
+            except Exception:
+                return True  # permit 查唔到但 value 有 permit_id = 信本地
         try:
             from permit import Permit
             pm = Permit()

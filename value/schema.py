@@ -11,11 +11,14 @@ value.db 存放「值資產」：
 #   一行 = 一個值（asset）
 #   value       = 值本身（data / build / 5W2H ...）
 #   taxonomy_id = taxonomy.registry.id（邊個 module 登記，trace 用）
+#   permit_id   = permit.db permit.id（呢個值嘅授權，2026-10-28b 方案 B）
+#                 一跳直達：value → permit_id → permit.db 確認有冇權
 VALUE_DDL = """
 CREATE TABLE IF NOT EXISTS value (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     value       TEXT,
     taxonomy_id INTEGER,             -- taxonomy.registry.id（邊個 module 登記）
+    permit_id   INTEGER,             -- permit.db permit.id（授權）
     is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
@@ -64,6 +67,7 @@ CREATE TABLE IF NOT EXISTS split_value (
 #   一行 = 一個「有權 call terminology」嘅 split_value
 #   terminology_id = terminology.api/route id（授權標記）
 #   split_value_id = split_value.id（邊個拆分值有權）
+#   permit_id      = permit.db permit.id（2026-10-28b 方案 B：直接連授權）
 # 用法：REST_API_WRITE -> 127.0.0.1:8500/word-proof?value=<value>&token=terminology.api
 #       -> <value> = split_value 對應嘅值（有 terminology_id = 有權工作）
 TERMINOLOGY_DDL = """
@@ -71,6 +75,7 @@ CREATE TABLE IF NOT EXISTS terminology (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     terminology_id  INTEGER NOT NULL,      -- terminology.api id（授權標記）
     split_value_id  INTEGER NOT NULL,      -- split_value.id（邊個拆分值有權）
+    permit_id       INTEGER,              -- permit.db permit.id（2026-10-28b）
     is_active       BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
