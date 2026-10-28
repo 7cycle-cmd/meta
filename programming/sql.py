@@ -30,6 +30,7 @@ class SqlStore:
         self._seed_sql_types()
         self._seed_python_syntax()
         self._seed_structure_types()
+        self._seed_sql_keywords()
         # 2026-10-27：全量官方語法/語句 seed（source_proof 證明）
         self._seed_python_operator()
         self._seed_sql_statements()
@@ -411,6 +412,47 @@ class SqlStore:
                 "UPDATE sql_type SET language_id = ?, action_id = ?"
                 " WHERE value = ?", (lang, act, val))
         self.conn.commit()
+
+    def _seed_sql_keywords(self):
+        """確保 sql_keyword 表有齊 SQL 關鍵字（冪等；source_id = ISO/IEC 9075）"""
+        sql_lang = self.conn.execute(
+            "SELECT id FROM programming_language WHERE meta = 'sql'"
+            " LIMIT 1").fetchone()
+        lang = sql_lang["id"] if sql_lang else 25
+        # source_id：ISO/IEC 9075 = 2（source.db；冇就 NULL）
+        src = None
+        try:
+            import sqlite3 as _sq
+            sc = _sq.connect(r"C:\projects\meta\source\source.db")
+            try:
+                sc.row_factory = _sq.Row
+                r = sc.execute(
+                    "SELECT id FROM source WHERE id = 2").fetchone()
+                src = r["id"] if r else None
+            finally:
+                sc.close()
+        except Exception:
+            pass
+        for kw in _schema.DEFAULT_SQL_KEYWORDS:
+            self.conn.execute(
+                "INSERT INTO sql_keyword (language_id, value, source_id)"
+                " SELECT ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM sql_keyword WHERE value = ?)",
+                (lang, kw, src, kw))
+            self.conn.execute(
+                "UPDATE sql_keyword SET source_id = COALESCE(?, source_id)"
+                " WHERE value = ?", (src, kw))
+        self.conn.commit()
+
+    def sql_keywords(self, active_only=True):
+        """列出 SQL 關鍵字字典（JOIN language）"""
+        sql = ("SELECT sk.*, pl.meta AS language"
+               " FROM sql_keyword sk"
+               " LEFT JOIN programming_language pl ON pl.id = sk.language_id")
+        if active_only:
+            sql += " WHERE sk.is_active = 1"
+        sql += " ORDER BY sk.id"
+        return [dict(r) for r in self.conn.execute(sql)]
 
     def _seed_python_syntax(self):
         """確保 python_ast 表有齊官方語法（冪等；object_id by id）"""

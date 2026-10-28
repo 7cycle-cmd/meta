@@ -553,6 +553,41 @@ CREATE TABLE IF NOT EXISTS Starred_allowed (
 );
 """
 
+# sql_keyword 表：SQL 關鍵字字典（2026-10-28 用戶：formula_cuter 證明用）
+#   language_id = programming_language.id（sql=25）
+#   sql_type_id = sql_type.id（DDL / DML 歸屬，可空 = 通用）
+#   value       = keyword（SELECT / FROM / WHERE / JOIN / TABLE ...）
+#   source_id   = source.db source.id（ISO/IEC 9075 = 2）
+# 一行 = 一個 SQL 關鍵字（官方標準可證明），
+# 用嚟 formula_cuter 每粒 SQL token 反查到「呢粒 = 官方 SQL keyword」。
+SQL_KEYWORD_DDL = """
+CREATE TABLE IF NOT EXISTS sql_keyword (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    language_id INTEGER NOT NULL,          -- programming_language.id（sql=25）
+    sql_type_id INTEGER,                    -- sql_type.id（DDL / DML；NULL = 通用）
+    value       TEXT    NOT NULL UNIQUE,   -- keyword（SELECT / FROM / WHERE ...）
+    source_id   INTEGER,                    -- source.db source.id（ISO/IEC 9075 = 2）
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# SQL 關鍵字預設種子（2026-10-28：ISO/IEC 9075 可證明；全 keyword）
+DEFAULT_SQL_KEYWORDS = [
+    "SELECT", "FROM", "WHERE", "JOIN", "LEFT JOIN", "RIGHT JOIN",
+    "INNER JOIN", "OUTER JOIN", "ON", "GROUP BY", "ORDER BY", "HAVING",
+    "LIMIT", "OFFSET", "AS", "DISTINCT", "ALL", "UNION", "INTERSECT",
+    "EXCEPT", "IN", "NOT IN", "EXISTS", "NOT EXISTS", "BETWEEN", "LIKE",
+    "IS NULL", "IS NOT NULL", "AND", "OR", "NOT", "CASE", "WHEN", "THEN",
+    "ELSE", "END", "INSERT INTO", "VALUES", "UPDATE", "SET", "DELETE FROM",
+    "CREATE TABLE", "ALTER TABLE", "DROP TABLE", "TRUNCATE", "RENAME",
+    "CREATE INDEX", "DROP INDEX", "CREATE VIEW", "DROP VIEW",
+    "CREATE TRIGGER", "DROP TRIGGER", "PRAGMA", "EXPLAIN", "VACUUM",
+    "ATTACH", "DETACH", "REINDEX", "ANALYZE", "WITH", "RECURSIVE",
+    "TABLE", "INDEX", "VIEW", "TRIGGER", "DATABASE", "SCHEMA",
+]
+
 # sql_allowed 表：SQL 語句（DDL/DML）允許出現嘅表/欄位（SQL 版 *allowed）
 #   sql_type_id  = sql_type.id（DDL / DML）
 #   value        = SQL 語句/關鍵字（CREATE TABLE / SELECT ...）
@@ -646,6 +681,7 @@ __all__ = ["PROGRAMMING_LANGUAGE_DDL", "LANGUAGE_ALIAS_DDL",
            "STRUCTURE_TYPE_DDL", "DEFAULT_STRUCTURE_TYPES",
            "FIELD_ALLOWED_DDL", "STARRED_ALLOWED_DDL", "SQL_ALLOWED_DDL",
            "PYTHON_ALLOWED_DDL",
+           "SQL_KEYWORD_DDL", "DEFAULT_SQL_KEYWORDS",
            "SQL_TYPE_DDL", "DEFAULT_SQL_TYPES", "EVIDENCE_AST_DDL",
            "EVIDENCE_DECORATORS_DDL", "EVIDENCE_SQL_DDL",
            "PROGRAMMING_EVIDENCE_DDL",

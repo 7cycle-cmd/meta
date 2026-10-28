@@ -109,6 +109,10 @@ class Programming:
         """列出 SQL 語句類型（DDL / DML）"""
         return self.store.sql_types(active_only)
 
+    def sql_keywords(self, active_only=True):
+        """列出 SQL 關鍵字字典（ISO/IEC 9075 可證明）"""
+        return self.store.sql_keywords(active_only)
+
     # ---------- formula subject × action × object（2026-10-28 用戶 redesign）----------
     def formula_subjects(self, active_only=True):
         """列出 subject 字典（python / sql）"""

@@ -622,6 +622,9 @@ class SqlStore:
         # 2026-10-27：symbol -> python_ast node（programming.db 反查）
         ast_by_symbol = {}
         src_python = None
+        # 2026-10-28：SQL keyword -> evidence_SQL source 證明（ISO/IEC 9075）
+        sql_kw_source = {}
+        sql_kw_ast = {}
         try:
             import sqlite3 as _sq
             pc = _sq.connect(r"C:\projects\meta\programming\programming.db")
@@ -637,6 +640,18 @@ class SqlStore:
                     " WHERE meta = 'python' AND is_active = 1 LIMIT 1"
                 ).fetchone()
                 src_python = pl["source_id"] if pl else None
+                # SQL keyword 證據：sql_keyword（value + source_id 全 keyword）
+                for x in pc.execute(
+                        "SELECT value, source_id FROM sql_keyword"
+                        " WHERE is_active = 1"):
+                    sql_kw_source[x["value"]] = x["source_id"]
+                # 舊 evidence_SQL 補充（主句都有）
+                for x in pc.execute(
+                        "SELECT value, source_id FROM evidence_SQL"
+                        " WHERE is_active = 1"):
+                    sql_kw_source.setdefault(x["value"], x["source_id"])
+                # SQL keyword -> python_ast 冇對應；但 SELECT 等大楷 keyword
+                # 可反查 known keyword 表（冇 -> 用 source 證明就夠）
             finally:
                 pc.close()
         except Exception:
@@ -646,13 +661,19 @@ class SqlStore:
             "DELETE FROM formula_cuter WHERE formula_id = ?", (formula_id,))
         for pos, tok in enumerate(tokens, 1):
             p_ast = ast_by_symbol.get(tok)
+            # SQL keyword（evidence_SQL 有 source）
+            src = None
+            if tok.upper() in sql_kw_source:
+                src = sql_kw_source[tok.upper()]
+            elif p_ast:
+                src = src_python
             self.conn.execute(
                 "INSERT INTO formula_cuter"
                 " (formula_id, seq_id, value, python_ast_id, source_id)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (formula_id, pos, tok,
                  p_ast if p_ast else None,
-                 src_python if p_ast else None))
+                 src))
         self.conn.commit()
         return tokens
 
