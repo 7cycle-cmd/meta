@@ -3789,9 +3789,106 @@ class SqlStore:
                         _m.close()
                 except Exception:
                     answers[s["question_id"]] = 0
+            elif test in ("inspect_table", "backfill_column",
+                          "verify_column", "verify_rowcount", "report",
+                          "check_dictionary", "check_symbol",
+                          "insert_symbol", "verify_symbol", "check_source",
+                          "fetch_external", "map_to_local", "upsert_local",
+                          "verify_count", "backup_table",
+                          "create_new_table", "copy_rows", "swap_table",
+                          "verify_foreign_keys", "inspect", "action",
+                          "verify"):
+                # 2026-10-29（用戶要求）：migrate 其餘 action 全部真實執行
+                # unified dispatch：每個 action 一個真 function
+                # （migration.Migration 對應方法），由 migration_log
+                # 最近記錄話事 target（module/table/column = value/''）
+                try:
+                    from migration import Migration as _M
+                    _m = _M()
+                    try:
+                        _logs = _m.logs(limit=1)
+                        if not _logs:
+                            answers[s["question_id"]] = 0
+                        else:
+                            _ml = _logs[0]
+                            module_name = self._taxonomy_meta_of(
+                                _ml.get("taxonomy_id")) or ""
+                            tbl = _ml.get("structure_db_table") or ""
+                            fn = getattr(_m, test, None)
+                            if not fn:
+                                answers[s["question_id"]] = 0
+                            else:
+                                # 參數形狀因 action 而異（表話事）
+                                if test == "inspect_table":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "backfill_column":
+                                    r = fn(module_name, tbl, v)
+                                elif test == "verify_column":
+                                    r = fn(module_name, tbl, v)
+                                elif test == "verify_rowcount":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "report":
+                                    r = fn(module_name, tbl)
+                                elif test == "check_dictionary":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "check_symbol":
+                                    r = fn(module_name, tbl, v)
+                                elif test == "insert_symbol":
+                                    r = fn(module_name, tbl, v)
+                                elif test == "verify_symbol":
+                                    r = fn(module_name, tbl, v)
+                                elif test == "check_source":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "fetch_external":
+                                    r = fn(module_name, v)
+                                elif test == "map_to_local":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "upsert_local":
+                                    r = fn(module_name, tbl, "id", v)
+                                elif test == "verify_count":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "backup_table":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "create_new_table":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "copy_rows":
+                                    r = fn(module_name, tbl, v or tbl)
+                                elif test == "swap_table":
+                                    r = fn(module_name, v or tbl, tbl)
+                                elif test == "verify_foreign_keys":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "inspect":
+                                    r = fn(module_name, v or tbl)
+                                elif test == "action":
+                                    r = fn(module_name, v or tbl)
+                                else:  # verify
+                                    r = fn(module_name, v or tbl)
+                                # PASS 準則（結果 dict 有 verified/recorded/
+                                #   clean/swapped/created/inserted/mapped/...）
+                                answers[s["question_id"]] = self._migrate_ok(
+                                    test, r)
+                    finally:
+                        _m.close()
+                except Exception:
+                    answers[s["question_id"]] = 0
             else:
                 answers[s["question_id"]] = 1 if v else 0
         return answers
+
+    def _migrate_ok(self, test, r):
+        """migrate action 結果 -> PASS/FAIL（true/false 欄位表話事）"""
+        if not isinstance(r, dict):
+            return 1 if r else 0
+        for k in ("verified", "recorded", "clean", "swapped", "created",
+                  "inserted", "mapped", "done", "exists", "added",
+                  "already"):
+            if k in r and r[k]:
+                return 1
+        # count-based：backfilled / copied / rowcount / count > 0
+        for k in ("backfilled", "copied", "rowcount", "count", "found"):
+            if k in r and isinstance(r[k], (int, float)) and r[k] > 0:
+                return 1
+        return 0
 
     def run_flow(self, flow_name, answers=None, value=None,
                  value_id=None, save=True, _depth=0, role_id=None,
