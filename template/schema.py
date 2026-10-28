@@ -210,6 +210,8 @@ CREATE TABLE IF NOT EXISTS formula (
 # 2026-10-27：position_id -> seq_id（用戶統一命名）
 # 2026-10-27：python_ast_id + source_id（每粒 symbol 可證明 = programming.python_ast 節點，
 #            source = programming_language.source_id / python.org）
+# 2026-10-28（用戶）：space 係 formula_cuter_value 一種 ——
+#            space_start_id = programming.space_start.id（"SPACE" 粒縮排量）
 FORMULA_CUTER_DDL = """
 CREATE TABLE IF NOT EXISTS formula_cuter (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -218,6 +220,7 @@ CREATE TABLE IF NOT EXISTS formula_cuter (
     value        TEXT    NOT NULL,   -- token（select / * / from / SPACE ...）
     python_ast_id INTEGER,            -- programming.python_ast.id（呢粒 token 對應邊個 AST 節點）
     source_id    INTEGER,            -- source.db source.id（官方來源，python.org）
+    space_start_id INTEGER,           -- programming.space_start.id（SPACE 粒縮排量，2026-10-28）
     UNIQUE (formula_id, seq_id)
 );
 """

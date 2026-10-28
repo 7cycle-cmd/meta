@@ -457,13 +457,22 @@ class SqlStore:
 
     # ---------- space_start（2026-10-28 用戶設計：縮排語法） ----------
     def _seed_space_start(self):
-        """確保 space_start 表有齊 1-100（冪等）"""
-        for n in _schema.DEFAULT_SPACE_STARTS:
+        """確保 space_start 表有齊 0-100（冪等；value = formula_cuter token 名）"""
+        # migration：value 欄（舊 DB 冇）
+        cols = [c[1] for c in self.conn.execute("PRAGMA table_info('space_start')")]
+        if "value" not in cols:
+            self.conn.execute("ALTER TABLE space_start ADD COLUMN value TEXT")
+            self.conn.commit()
+            print("[programming] space_start + value 欄")
+        for n, val in _schema.DEFAULT_SPACE_STARTS:
             self.conn.execute(
-                "INSERT INTO space_start (space_total)"
-                " SELECT ? WHERE NOT EXISTS"
+                "INSERT INTO space_start (space_total, value)"
+                " SELECT ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM space_start WHERE space_total = ?)",
-                (n, n))
+                (n, val, n))
+            self.conn.execute(
+                "UPDATE space_start SET value = ? WHERE space_total = ?",
+                (val, n))
         self.conn.commit()
 
     def space_starts(self, active_only=True):

@@ -184,6 +184,11 @@ class SqlStore:
                     "ALTER TABLE formula_cuter ADD COLUMN source_id INTEGER")
                 self.conn.commit()
                 print("[template] formula_cuter + source_id 欄")
+            if "space_start_id" not in cols:
+                self.conn.execute(
+                    "ALTER TABLE formula_cuter ADD COLUMN space_start_id INTEGER")
+                self.conn.commit()
+                print("[template] formula_cuter + space_start_id 欄")
             return
         if "seq_id" in cols:
             self.conn.execute(
@@ -195,6 +200,14 @@ class SqlStore:
             " position_id TO seq_id")
         self.conn.commit()
         print("[template] formula_cuter.position_id -> seq_id")
+        # 2026-10-28：space_start_id 欄（SPACE 粒縮排量 by id）
+        cols2 = [c[1] for c in self.conn.execute(
+            "PRAGMA table_info('formula_cuter')")]
+        if "space_start_id" not in cols2:
+            self.conn.execute(
+                "ALTER TABLE formula_cuter ADD COLUMN space_start_id INTEGER")
+            self.conn.commit()
+            print("[template] formula_cuter + space_start_id 欄")
 
     def _seed_decorators(self):
         """確保 decorator 表有齊公式裝飾器定義（冪等，唔燒 sqlite_sequence）
@@ -625,6 +638,8 @@ class SqlStore:
         # 2026-10-28：SQL keyword -> evidence_SQL source 證明（ISO/IEC 9075）
         sql_kw_source = {}
         sql_kw_ast = {}
+        # 2026-10-28：SPACE 粒 -> space_start.id（value='SPACE' 對應縮排量）
+        space_start_ids = {}
         try:
             import sqlite3 as _sq
             pc = _sq.connect(r"C:\projects\meta\programming\programming.db")
@@ -650,8 +665,13 @@ class SqlStore:
                         "SELECT value, source_id FROM evidence_SQL"
                         " WHERE is_active = 1"):
                     sql_kw_source.setdefault(x["value"], x["source_id"])
-                # SQL keyword -> python_ast 冇對應；但 SELECT 等大楷 keyword
-                # 可反查 known keyword 表（冇 -> 用 source 證明就夠）
+                # space_start：value='SPACE' 嘅粒 -> id（space_total=1 嗰粒）
+                # SPACE token 係「一個空格」-> space_start.space_total=1
+                sp = pc.execute(
+                    "SELECT id FROM space_start WHERE space_total = 1"
+                    " AND is_active = 1 LIMIT 1").fetchone()
+                if sp:
+                    space_start_ids["SPACE"] = sp["id"]
             finally:
                 pc.close()
         except Exception:
@@ -667,13 +687,15 @@ class SqlStore:
                 src = sql_kw_source[tok.upper()]
             elif p_ast:
                 src = src_python
+            sid = space_start_ids.get(tok)  # SPACE 粒 -> space_start_id
             self.conn.execute(
                 "INSERT INTO formula_cuter"
-                " (formula_id, seq_id, value, python_ast_id, source_id)"
-                " VALUES (?, ?, ?, ?, ?)",
+                " (formula_id, seq_id, value, python_ast_id, source_id,"
+                "  space_start_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (formula_id, pos, tok,
                  p_ast if p_ast else None,
-                 src))
+                 src, sid))
         self.conn.commit()
         return tokens
 
