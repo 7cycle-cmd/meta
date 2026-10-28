@@ -127,6 +127,40 @@ class Structure:
         """AST 掃描 function 地址入 structure_function（2026-10-28）"""
         return self.store.sync_structure_functions(module_name)
 
+    # ---------- structure_schema / structure_tool（2026-10-28 用戶設計） ----------
+    def add_structure_schema(self, resource_schema_id, package_id,
+                             line_number=None, file_id=None):
+        """登記「resource_schema 嘅物理位置」（冪等，by_id）"""
+        return self.store.add_structure_schema(resource_schema_id,
+                                               package_id,
+                                               line_number, file_id)
+
+    def list_structure_schemas(self, resource_schema_id=None,
+                               package_id=None, active_only=True):
+        """列出 structure_schema（可按 resource / package 篩選）"""
+        return self.store.structure_schemas(resource_schema_id,
+                                             package_id, active_only)
+
+    def add_structure_tool(self, resource_tool_id, package_id,
+                           line_number=None, file_id=None):
+        """登記「resource_tool 嘅物理位置」（冪等，by_id）"""
+        return self.store.add_structure_tool(resource_tool_id, package_id,
+                                             line_number, file_id)
+
+    def list_structure_tools(self, resource_tool_id=None,
+                             package_id=None, active_only=True):
+        """列出 structure_tool（可按 resource / package 篩選）"""
+        return self.store.structure_tools(resource_tool_id,
+                                           package_id, active_only)
+
+    def add_line_number(self, package_id, line_number, file_id=None):
+        """登記一個行號實體（冪等）"""
+        return self.store.add_line_number(package_id, line_number, file_id)
+
+    def list_line_numbers(self, package_id=None, active_only=True):
+        """列出 line_number（可按 package 篩選）"""
+        return self.store.line_numbers(package_id, active_only)
+
     def register_structure_file(self, module_id, file_name, file_type_id=None):
         """登記一個實體檔案（冪等）—— file 層行（structure_module）
 

@@ -33,6 +33,8 @@ class SqlStore:
         self.conn.row_factory = sqlite3.Row
         self._migrate_drop_old_tables()
         self.conn.execute(REGISTRY_DDL)
+        # schema_registry（2026-10-28 用戶設計）：DDL 定義 by id
+        self.conn.execute(SCHEMA_REGISTRY_DDL)
         self.conn.commit()
 
     def _migrate_drop_old_tables(self):
@@ -103,6 +105,33 @@ class SqlStore:
         sql += " ORDER BY id DESC LIMIT ?"
         args.append(limit)
         return [dict(r) for r in self.conn.execute(sql, args)]
+
+    # ---------- schema_registry（2026-10-28 用戶設計：DDL 定義 by id） ----------
+    def add_schema_registry(self, meta, source=None, description=None):
+        """登記一個 schema 定義（冪等：meta UNIQUE）
+
+        meta   = DDL symbol 名（e.g. REGISTRY_DDL / CONDITION_DDL）
+        source = 定義來源（e.g. terminology/schema.py）
+        """
+        cur = self.conn.execute(
+            "INSERT INTO schema_registry (meta, source, description)"
+            " SELECT ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM schema_registry WHERE meta = ?)",
+            (meta, source, description, meta))
+        self.conn.commit()
+        if cur.rowcount:
+            return cur.lastrowid
+        r = self.conn.execute(
+            "SELECT id FROM schema_registry WHERE meta = ?", (meta,)).fetchone()
+        return r["id"] if r else None
+
+    def schema_registries(self, active_only=True):
+        """列出 schema 定義（全部已登記 DDL symbol）"""
+        sql = "SELECT * FROM schema_registry"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.conn.execute(sql)]
 
     def count(self):
         return self.conn.execute(

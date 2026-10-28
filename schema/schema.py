@@ -28,4 +28,21 @@ CREATE TABLE IF NOT EXISTS registry (
     updated_at             TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 """
-__all__ = ['REGISTRY_DDL']
+
+# schema_registry 表（2026-10-28 用戶設計）：
+#   schema 定義登記 —— 一行 = 一個 schema（DDL symbol）by id。
+#   資源層（resource_schema.schema_registry_id）指向呢度（by_id，零 hardcode）。
+#   meta   = schema 名（e.g. REGISTRY_DDL / CONDITION_DDL —— DDL symbol 名）
+#   source = 定義來源（e.g. terminology/schema.py —— 邊個檔定義）
+SCHEMA_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS schema_registry (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    meta        TEXT    NOT NULL UNIQUE,  -- schema 名（DDL symbol：REGISTRY_DDL ...）
+    source      TEXT,                     -- 定義來源（module/schema.py）
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+__all__ = ['REGISTRY_DDL', 'SCHEMA_REGISTRY_DDL']

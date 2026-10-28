@@ -62,6 +62,38 @@ CREATE TABLE IF NOT EXISTS resource_formula (
 );
 """
 
+# resource_schema 表（2026-10-28 用戶設計）：
+#   一行 = 「邊個 module（taxonomy.tree_id）用邊個 schema（schema.db registry.id）」
+#   schema.registry_id = schema.db registry.id（schema 執行登記，run_id 產生）
+#   零 hardcode：tree_id / registry_id 都係其他 db 嘅真實 id
+RESOURCE_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS resource_schema (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    taxonomy_tree_id  INTEGER NOT NULL,   -- taxonomy.tree.id（channel / module / skill）
+    schema_registry_id INTEGER NOT NULL,   -- schema.db registry.id
+    is_active         INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (taxonomy_tree_id, schema_registry_id)
+);
+"""
+
+# resource_tool 表（2026-10-28 用戶設計）：
+#   一行 = 「邊個 module（taxonomy.tree_id）用邊個 tool（tool.db registry.id）」
+#   tool.registry_id = tool.db registry.id（module_id + skill_id + WRITE + READ）
+#   tool_registry_id 允許 NULL = 「未用任何 tool」嘅誠實狀態（唔可以 fake）
+RESOURCE_TOOL_DDL = """
+CREATE TABLE IF NOT EXISTS resource_tool (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    taxonomy_tree_id  INTEGER NOT NULL,   -- taxonomy.tree.id（channel / module / skill）
+    tool_registry_id  INTEGER,            -- tool.db registry.id（NULL = 未用）
+    is_active         INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (taxonomy_tree_id, tool_registry_id)
+);
+"""
+
 DEFAULT_TYPES = [
     (1, "taxonomy"),
     (2, "structure"),
@@ -74,5 +106,7 @@ __all__ = [
     "RESOURCE_TAXONOMY_DDL",
     "RESOURCE_STRUCTURE_DDL",
     "RESOURCE_FORMULA_DDL",
+    "RESOURCE_SCHEMA_DDL",
+    "RESOURCE_TOOL_DDL",
     "DEFAULT_TYPES",
 ]

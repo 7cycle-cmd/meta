@@ -6,8 +6,10 @@
 routes：
     GET  /health
     GET  /registries?run_id=&plan_id=&skill_id=
+    GET  /schema-registries   （2026-10-28 用戶設計：DDL 定義 by id）
     POST /registries   {"run_id": n, "plan_id": n, "skill_id": n}
     POST /check        {"run_id": n, "plan_id": n, "skill_id": n}
+    POST /schema-registries  {"meta": "CONDITION_DDL", "source": ...}
 
 啟動：
     python -m schema.rest_api --port 9500
@@ -75,6 +77,10 @@ class _Handler(BaseHTTPRequestHandler):
                 skill_id = int(qs["skill_id"]) if qs.get("skill_id") else None
                 self._send(200, {"registries": s.registries(
                     run_id=run_id, plan_id=plan_id, skill_id=skill_id)})
+            elif path == "/schema-registries":
+                # DDL 定義 by id（2026-10-28 用戶設計）
+                self._send(200, {"schema_registries":
+                                 s.schema_registries()})
             else:
                 self._send(404, {"error": f"唔知 route: {path}"})
         finally:
@@ -107,6 +113,16 @@ class _Handler(BaseHTTPRequestHandler):
                     r = s.check_schema(run_id, body.get("plan_id"),
                                        body.get("skill_id"))
                     self._send(200, r)
+            elif path == "/schema-registries":
+                # 登記一個 schema 定義（2026-10-28 用戶設計）
+                meta = body.get("meta")
+                if not meta:
+                    self._send(400, {"error": "需要 meta（DDL symbol 名）"})
+                else:
+                    gid = s.add_schema_registry(
+                        meta, body.get("source"), body.get("description"))
+                    self._send(200, {"schema_registry_id": gid,
+                                     "meta": meta})
             else:
                 self._send(404, {"error": f"唔知 route: {path}"})
         finally:

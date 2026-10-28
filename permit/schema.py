@@ -178,31 +178,52 @@ CREATE TABLE IF NOT EXISTS import_permit (
 );
 """
 
-# import_request 表：module 嘅 import 申請（2026-10-28 用戶：按 need 申請，冇 default）
+# import_registry 表：module 嘅 import 申請（2026-10-28 用戶：按 need 申請，冇 default）
 #   module_id      = taxonomy.registry.id（邊個 module 申請）
 #   imported       = 想 import 嘅嘢（'.schema' / 'sqlite3' / 'source.api' ...）
-#   symbols        = 想 import 嘅 symbols（'ALL' = 全部；'SqlStore' 單個）
+#   schema_id      = schema_registry.id（具體 schema symbol，by id 逐個申請！）
+#   symbols        = 想 import 嘅 symbols（'ALL' = 唔准，一定要 by id）
 #   reason         = 點解需要（module 自己講，link 返 skill/function）
 #   status_id      = 1=pending（等批）2=approved（已批）3=rejected（已拒）
 #   tool_id        = tool.registry.id（邊個工具需要呢個 import，可空）
 # 一次申請 -> 批准（要有證明鏈）-> 寫 import_permit（正式授權記錄）
+#
+# 2026-10-28（用戶要求）：ALL 唔准！一定要 by id 逐個申請（1 by 1），
+# 每個都要 reason，trace 100%。
 IMPORT_REQUEST_DDL = """
 CREATE TABLE IF NOT EXISTS import_request (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     module_id          INTEGER NOT NULL,      -- taxonomy.registry.id（申請者）
     imported           TEXT    NOT NULL,      -- 想 import 嘅嘢
-    symbols            TEXT    NOT NULL DEFAULT 'ALL',  -- 想 import 嘅 symbols
-    reason             TEXT,                  -- 點解需要
+    schema_id          INTEGER,               -- schema_registry.id（具體 schema，by id）
+    symbols            TEXT    NOT NULL DEFAULT '',       -- symbol 名（單個）
+    reason             TEXT,                  -- 點解需要（每個都要）
     status_id          INTEGER NOT NULL DEFAULT 1,      -- 1=pending 2=approved 3=rejected
     tool_id            INTEGER,               -- tool.registry.id（需要嘅工具）
     decided_by         TEXT,                   -- 邊個決定（tool / monitor / admin）
     created_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     updated_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-    UNIQUE (module_id, imported, symbols)
+    UNIQUE (module_id, imported, schema_id, symbols)
+);
+"""
+
+# schema_registry 表：全站 schema symbol 註冊（2026-10-28 用戶：by id 逐個申請）
+# 一行 = 一個 DDL / symbol 資產（例如 terminology.schema 嘅 25 個 DDL）。
+# module 想 import 邊個 symbol -> 申請嗰個 schema_id（唔可以 ALL 一炮過）。
+SCHEMA_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS schema_registry (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id          INTEGER NOT NULL,      -- taxonomy.registry.id（邊個 module 擁有）
+    symbol             TEXT    NOT NULL,      -- DDL symbol 名（INDUSTRY_DDL / RUN_DDL ...）
+    table_names        TEXT,                  -- 呢個 DDL 建咩表（逗號分隔，可空）
+    is_active          BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (module_id, symbol)
 );
 """
 
 __all__ = ["SUBJECT_TYPE_DDL", "DEFAULT_SUBJECT_TYPES", "SUBJECT_DDL",
            "OBJECT_TYPE_DDL", "DEFAULT_OBJECT_TYPES", "OBJECT_DDL",
            "PERMIT_TYPE_DDL", "DEFAULT_PERMIT_TYPES", "PERMIT_DDL",
-           "IMPORT_REGISTRY_DDL", "IMPORT_PERMIT_DDL", "IMPORT_REQUEST_DDL"]
+           "IMPORT_REGISTRY_DDL", "IMPORT_PERMIT_DDL", "IMPORT_REQUEST_DDL",
+           "SCHEMA_REGISTRY_DDL"]

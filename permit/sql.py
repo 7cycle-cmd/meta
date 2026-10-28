@@ -15,6 +15,7 @@ class SqlStore:
             SUBJECT_TYPE_DDL, SUBJECT_DDL, OBJECT_TYPE_DDL, OBJECT_DDL,
             PERMIT_TYPE_DDL, PERMIT_DDL,
             IMPORT_REGISTRY_DDL, IMPORT_PERMIT_DDL, IMPORT_REQUEST_DDL,
+            SCHEMA_REGISTRY_DDL,
         ]))
         self.conn.commit()
         self._seed_dicts()
@@ -47,6 +48,43 @@ class SqlStore:
             self.conn.execute(IMPORT_REQUEST_DDL)
             self.conn.commit()
             print("[permit] import_request 表建立")
+        # schema_registry 表（舊 DB 冇 -> 補建）
+        has_sr = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='schema_registry'").fetchone()
+        if not has_sr:
+            self.conn.execute(SCHEMA_REGISTRY_DDL)
+            self.conn.commit()
+            print("[permit] schema_registry 表建立")
+        # import_request 加 schema_id 欄（migration）
+        rcols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('import_request')")}
+        if "schema_id" not in rcols:
+            self.conn.execute(
+                "ALTER TABLE import_request ADD COLUMN schema_id INTEGER")
+            self.conn.commit()
+            print("[permit] import_request + schema_id 欄")
+
+    def register_schema_symbols(self, module_name, symbols):
+        """註冊一個 module 嘅 schema symbols（schema_registry，by id）
+
+        掃 module/schema.py 嘅 DDL symbol 入表（冇呢個註冊 = 冇得申請）。
+        symbols = [("INDUSTRY_DDL", "industry"), ...]（symbol, 表名）
+        """
+        mid = self._module_id(module_name)
+        if not mid:
+            raise ValueError(f"module '{module_name}' 喺 taxonomy 搵唔到")
+        n = 0
+        for symbol, table_names in symbols:
+            cur = self.conn.execute(
+                "INSERT INTO schema_registry (module_id, symbol, table_names)"
+                " SELECT ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM schema_registry"
+                "  WHERE module_id = ? AND symbol = ?)",
+                (mid, symbol, table_names, mid, symbol))
+            n += cur.rowcount
+        self.conn.commit()
+        return n
 
     # ---------- import 申請 / 批准（2026-10-28 用戶：按 need，冇 default）----------
     # module 有自己 function/skill，需要 import 就申請（import_request 表），
@@ -70,25 +108,52 @@ class SqlStore:
         except Exception:
             return None
 
-    def request_import(self, module_name, imported, symbols="ALL",
-                       reason=None, tool_id=None):
-        """module 申請一個 import（按 need，冇 default）
+    def request_import(self, module_name, imported, schema_id=None,
+                       symbol=None, reason=None, tool_id=None):
+        """module 申請一個 import（按 need，by id 逐個申請，冇 default）
 
         module_name = 申請 module 名
         imported    = 想 import 嘅嘢（'.schema' / 'sqlite3' / 'source.api' ...）
-        symbols     = 想 import 嘅 symbols（'ALL' = 全部 / 單個 symbol）
-        reason      = 點解需要（module 自己講）
+        schema_id   = schema_registry.id（具體 schema symbol，by id！）
+        symbol      = symbol 名（單個，例如 INDUSTRY_DDL）
+        reason      = 點解需要（每個都要，唔可以空）
         tool_id     = 邊個工具需要（可選）
-        返回 {"request_id", "status": "pending", "hint"}（第一次申請 = pending）
+
+        用戶規則（2026-10-28）：ALL 唔准！一定要 1 by 1 申請，
+        每個都要 reason，trace 100%。
+        返回 {"request_id", "status": "pending", "hint"}
         """
+        # 擋 ALL（唔准一炮過）
+        if symbol == "ALL" or schema_id is None and symbol is None:
+            raise ValueError(
+                "[permit] 'ALL' 唔准！一定要 by id 逐個申請（1 by 1）"
+                " + 每個都要 reason。")
+        if not reason or not str(reason).strip():
+            raise ValueError("[permit] 申請一定要 reason（每個都要）。")
         mid = self._module_id(module_name)
         if not mid:
             raise ValueError(f"module '{module_name}' 喺 taxonomy 搵唔到")
+        # schema_id 由 symbol 反查（冇 -> 資料都未註冊 = 假申請）
+        if schema_id is None:
+            r = self.conn.execute(
+                "SELECT id FROM schema_registry"
+                " WHERE module_id = ? AND symbol = ? AND is_active = 1",
+                (mid, symbol)).fetchone()
+            if not r:
+                raise ValueError(
+                    f"[permit] symbol '{symbol}' 喺 schema_registry 未註冊"
+                    f" —— 先用 register_schema_symbols() 註冊真 schema")
+            schema_id = r["id"]
+        if symbol is None:
+            r = self.conn.execute(
+                "SELECT symbol FROM schema_registry WHERE id = ?",
+                (schema_id,)).fetchone()
+            symbol = r["symbol"] if r else "?"
         # 已有 pending / approved -> 攞返
         existing = self.conn.execute(
             "SELECT id, status_id FROM import_request"
-            " WHERE module_id = ? AND imported = ? AND symbols = ?",
-            (mid, imported, symbols)).fetchone()
+            " WHERE module_id = ? AND imported = ? AND schema_id = ?",
+            (mid, imported, schema_id)).fetchone()
         if existing:
             return {"request_id": existing["id"],
                     "status": {1: "pending", 2: "approved",
@@ -96,17 +161,20 @@ class SqlStore:
                     "hint": "已申請過"}
         self.conn.execute(
             "INSERT INTO import_request"
-            " (module_id, imported, symbols, reason, status_id, tool_id)"
-            " VALUES (?, ?, ?, ?, 1, ?)",
-            (mid, imported, symbols, reason, tool_id))
+            " (module_id, imported, schema_id, symbols, reason,"
+            "  status_id, tool_id)"
+            " VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (mid, imported, schema_id, symbol, reason, tool_id))
         self.conn.commit()
         r = self.conn.execute(
             "SELECT id FROM import_request"
-            " WHERE module_id = ? AND imported = ? AND symbols = ?",
-            (mid, imported, symbols)).fetchone()
+            " WHERE module_id = ? AND imported = ? AND schema_id = ?",
+            (mid, imported, schema_id)).fetchone()
         return {"request_id": r["id"] if r else None,
                 "status": "pending",
-                "hint": "申請已提交，等 tool / monitor 批准"}
+                "schema_id": schema_id,
+                "symbol": symbol,
+                "hint": "申請已提交（by id），等 tool / monitor 批准"}
 
     def approve_import(self, request_id, decided_by="tool",
                        condition_id=None, flow_id=None, step_id=None,
@@ -128,7 +196,7 @@ class SqlStore:
         ).fetchone()
         if not r:
             return {"error": "申請唔存在"}
-        # 寫入正式 permit（埋證明鏈）
+        # 寫入正式 permit（埋證明鏈 + schema_id by id）
         self.conn.execute(
             "INSERT INTO import_permit"
             " (module_id, imported, symbols, description, granted_by,"
@@ -146,7 +214,9 @@ class SqlStore:
             (decided_by, request_id))
         self.conn.commit()
         return {"approved": True, "request_id": request_id,
-                "permit": f"{r['imported']} {r['symbols']}",
+                "permit": f"{r['imported']} {r['symbols']} (schema_id={r['schema_id']})",
+                "schema_id": r["schema_id"],
+                "symbol": r["symbols"],
                 "proof": {
                     "condition_id": condition_id,
                     "flow_id": flow_id,

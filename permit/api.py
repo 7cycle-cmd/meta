@@ -49,12 +49,20 @@ class Permit:
         """檢查 module 有冇權 import（allowlist 之外 = 擋）"""
         return self.store.check_import_permit(module_name, imported, symbols)
 
-    # ---------- import 申請（2026-10-28 用戶：按 need，冇 default）----------
-    def request_import(self, module_name, imported, symbols="ALL",
-                       reason=None, tool_id=None):
-        """module 申請 import（-> pending，等 tool/monitor 批）"""
-        return self.store.request_import(module_name, imported, symbols,
-                                          reason, tool_id)
+    # ---------- import 申請（2026-10-28 用戶：按 need，by id，冇 default）----------
+    def request_import(self, module_name, imported, schema_id=None,
+                       symbol=None, reason=None, tool_id=None):
+        """module 申請 import（by id 逐個，每個要 reason；ALL 唔准）"""
+        return self.store.request_import(module_name, imported, schema_id,
+                                          symbol, reason, tool_id)
+
+    def register_schema_symbols(self, module_name, symbols):
+        """註冊 module 嘅 schema symbols（schema_registry，by id）"""
+        return self.store.register_schema_symbols(module_name, symbols)
+
+    def schema_symbols(self, module_name=None, active_only=True):
+        """列出 schema_registry（可按 module 篩選）"""
+        return self.store.schema_symbols(module_name, active_only)
 
     def approve_import(self, request_id, decided_by="tool",
                        condition_id=None, flow_id=None, step_id=None,

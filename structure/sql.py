@@ -111,6 +111,62 @@ CREATE TABLE IF NOT EXISTS structure_function (
 STRUCTURE_ADDRESS_DDL = (STRUCTURE_ROOT_DDL + STRUCTURE_MODULE_DDL
                          + STRUCTURE_SKILL_DDL + STRUCTURE_FUNCTION_DDL)
 
+# structure_schema 表（2026-10-28 用戶設計）：
+#   一行 = 「resource_schema（module × schema）喺邊個 package 邊個 file 邊行」
+#   resource_schema_id = resource.db resource_schema.id
+#   package_id         = structure.db structure_module.id（structure_type=package）
+#   file_id            = structure.db structure_module.id（structure_type=file）
+#   line_number_id     = structure.db line_number.id（by_id 字典引用，
+#                         唔直接存數字 —— 行號都係可 trace 嘅實體）
+STRUCTURE_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS structure_schema (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_schema_id  INTEGER NOT NULL,   -- resource.db resource_schema.id
+    package_id          INTEGER NOT NULL,   -- structure_module.id（package 層）
+    file_id             INTEGER,            -- structure_module.id（file 層）
+    line_number_id      INTEGER,            -- line_number.id（行號字典）
+    is_active           BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (resource_schema_id, package_id)
+);
+"""
+
+# structure_tool 表（2026-10-28 用戶設計）：
+#   一行 = 「resource_tool（module × tool）喺邊個 package 邊個 file 邊行」
+#   resource_tool_id = resource.db resource_tool.id
+#   package_id       = structure.db structure_module.id（structure_type=package）
+#   file_id          = structure.db structure_module.id（structure_type=file）
+#   line_number_id   = structure.db line_number.id
+STRUCTURE_TOOL_DDL = """
+CREATE TABLE IF NOT EXISTS structure_tool (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_tool_id    INTEGER NOT NULL,   -- resource.db resource_tool.id
+    package_id          INTEGER NOT NULL,   -- structure_module.id（package 層）
+    file_id             INTEGER,            -- structure_module.id（file 層）
+    line_number_id      INTEGER,            -- line_number.id（行號字典）
+    is_active           BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (resource_tool_id, package_id)
+);
+"""
+
+# line_number 表（2026-10-28 用戶設計）：
+#   行號字典 —— line_number_id 指向呢度（by_id，唔直接存數字）
+#   一行 = 一個行號實體（module + file + 行號 唯一）
+LINE_NUMBER_DDL = """
+CREATE TABLE IF NOT EXISTS line_number (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id    INTEGER NOT NULL,   -- structure_module.id（package 層）
+    file_id       INTEGER,            -- structure_module.id（file 層）
+    line_number   INTEGER NOT NULL,   -- 真實行號（AST node.lineno）
+    is_active     BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (package_id, line_number)
+);
+"""
+
 # structure_file 表已移除（2026-10-26）—— file 層直接用真檔名：
 #   structure_module (structure_type_id=file) 一行一個實體 .py 檔，
 #   value = file_name（唔需要 file_type 字典；file_name 就係檔名）。
@@ -617,6 +673,12 @@ class SqlStore:
                 SqlStore._scanned_all = True
         except Exception as exc:
             print(f"[structure] sync_db_tables 失敗: {exc}")
+        # 2026-10-28（用戶設計）：structure_schema / structure_tool /
+        # line_number 字典 —— import permit by-id trace 嘅落點
+        self.conn.execute(STRUCTURE_SCHEMA_DDL)
+        self.conn.execute(STRUCTURE_TOOL_DDL)
+        self.conn.execute(LINE_NUMBER_DDL)
+        self.conn.commit()
 
     def _migrate_db_field_format_refs(self):
         """遷移（幂等）：db_field_setting_id 欄 -> db_field_format_id（2026-10-25 rebuild）
@@ -3977,6 +4039,141 @@ class SqlStore:
             sql += " AND sm.module_id = ?"
             args.append(module_id)
         sql += " ORDER BY sm.module_id, sm.value, sf.line_number"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    # ---------- line_number 字典（2026-10-28 用戶設計） ----------
+    def add_line_number(self, package_id, line_number, file_id=None):
+        """登記一個行號實體（冪等）
+
+        package_id   = structure_module.id（package 層）
+        line_number  = 真實行號（AST node.lineno）
+        file_id      = structure_module.id（file 層，可選）
+        """
+        cur = self.conn.execute(
+            "INSERT INTO line_number (package_id, file_id, line_number)"
+            " SELECT ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM line_number"
+            "  WHERE package_id = ? AND line_number = ?)",
+            (package_id, file_id, line_number,
+             package_id, line_number))
+        self.conn.commit()
+        if cur.rowcount:
+            return cur.lastrowid
+        r = self.conn.execute(
+            "SELECT id FROM line_number"
+            " WHERE package_id = ? AND line_number = ?",
+            (package_id, line_number)).fetchone()
+        return r["id"] if r else None
+
+    def line_numbers(self, package_id=None, active_only=True):
+        """列出 line_number（可按 package 篩選）"""
+        sql = "SELECT * FROM line_number WHERE 1=1"
+        args = []
+        if package_id is not None:
+            sql += " AND package_id = ?"
+            args.append(package_id)
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY package_id, line_number"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    # ---------- structure_schema / structure_tool（2026-10-28 用戶設計） ----------
+    def add_structure_schema(self, resource_schema_id, package_id,
+                             line_number=None, file_id=None):
+        """登記「resource_schema 嘅物理位置」（冪等）
+
+        resource_schema_id = resource.db resource_schema.id
+        package_id         = structure_module.id（package 層）
+        line_number        = 真實行號（自動登記 line_number 字典 -> id）
+        file_id            = structure_module.id（file 層，可選）
+        """
+        line_number_id = None
+        if line_number is not None:
+            line_number_id = self.add_line_number(package_id, line_number,
+                                                   file_id)
+        cur = self.conn.execute(
+            "INSERT INTO structure_schema"
+            " (resource_schema_id, package_id, file_id, line_number_id)"
+            " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM structure_schema"
+            "  WHERE resource_schema_id = ? AND package_id = ?)",
+            (resource_schema_id, package_id, file_id, line_number_id,
+             resource_schema_id, package_id))
+        self.conn.commit()
+        if cur.rowcount:
+            return cur.lastrowid
+        r = self.conn.execute(
+            "SELECT id FROM structure_schema"
+            " WHERE resource_schema_id = ? AND package_id = ?",
+            (resource_schema_id, package_id)).fetchone()
+        return r["id"] if r else None
+
+    def structure_schemas(self, resource_schema_id=None, package_id=None,
+                          active_only=True):
+        """列出 structure_schema（可按 resource / package 篩選）"""
+        sql = ("SELECT ss.*, ln.line_number AS line_number_value"
+               " FROM structure_schema ss"
+               " LEFT JOIN line_number ln ON ln.id = ss.line_number_id"
+               " WHERE 1=1")
+        args = []
+        if resource_schema_id is not None:
+            sql += " AND ss.resource_schema_id = ?"
+            args.append(resource_schema_id)
+        if package_id is not None:
+            sql += " AND ss.package_id = ?"
+            args.append(package_id)
+        if active_only:
+            sql += " AND ss.is_active = 1"
+        sql += " ORDER BY ss.id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def add_structure_tool(self, resource_tool_id, package_id,
+                           line_number=None, file_id=None):
+        """登記「resource_tool 嘅物理位置」（冪等）
+
+        resource_tool_id = resource.db resource_tool.id
+        package_id       = structure_module.id（package 層）
+        line_number      = 真實行號（自動登記 line_number 字典 -> id）
+        file_id          = structure_module.id（file 層，可選）
+        """
+        line_number_id = None
+        if line_number is not None:
+            line_number_id = self.add_line_number(package_id, line_number,
+                                                   file_id)
+        cur = self.conn.execute(
+            "INSERT INTO structure_tool"
+            " (resource_tool_id, package_id, file_id, line_number_id)"
+            " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM structure_tool"
+            "  WHERE resource_tool_id = ? AND package_id = ?)",
+            (resource_tool_id, package_id, file_id, line_number_id,
+             resource_tool_id, package_id))
+        self.conn.commit()
+        if cur.rowcount:
+            return cur.lastrowid
+        r = self.conn.execute(
+            "SELECT id FROM structure_tool"
+            " WHERE resource_tool_id = ? AND package_id = ?",
+            (resource_tool_id, package_id)).fetchone()
+        return r["id"] if r else None
+
+    def structure_tools(self, resource_tool_id=None, package_id=None,
+                        active_only=True):
+        """列出 structure_tool（可按 resource / package 篩選）"""
+        sql = ("SELECT st.*, ln.line_number AS line_number_value"
+               " FROM structure_tool st"
+               " LEFT JOIN line_number ln ON ln.id = st.line_number_id"
+               " WHERE 1=1")
+        args = []
+        if resource_tool_id is not None:
+            sql += " AND st.resource_tool_id = ?"
+            args.append(resource_tool_id)
+        if package_id is not None:
+            sql += " AND st.package_id = ?"
+            args.append(package_id)
+        if active_only:
+            sql += " AND st.is_active = 1"
+        sql += " ORDER BY st.id"
         return [dict(r) for r in self.conn.execute(sql, args)]
 
     def insert_structure_file(self, module_id, file_name, file_type_id=None):

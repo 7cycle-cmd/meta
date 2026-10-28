@@ -156,5 +156,18 @@ class Schema:
     def count(self):
         return self.store.count()
 
+    # ---------- schema_registry（2026-10-28 用戶設計：DDL 定義 by id） ----------
+    def add_schema_registry(self, meta, source=None, description=None):
+        """登記一個 schema 定義（冪等：meta UNIQUE）
+
+        meta   = DDL symbol 名（e.g. REGISTRY_DDL / CONDITION_DDL）
+        source = 定義來源（e.g. terminology/schema.py）
+        """
+        return self.store.add_schema_registry(meta, source, description)
+
+    def schema_registries(self, active_only=True):
+        """列出 schema 定義（全部已登記 DDL symbol，by id）"""
+        return self.store.schema_registries(active_only)
+
     def close(self):
         self.store.close()
