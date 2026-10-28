@@ -39,5 +39,16 @@ class Migration:
         return {"total": self.store.count(),
                 "by_module": self.store.by_module()}
 
+    def check_column(self, module_name, table, column):
+        """真實檢查：column 存唔存在（PRAGMA table_info 權威）
+
+        module_name = taxonomy.registry.meta（邊個 module；決定 db 檔）
+        table       = 張表名
+        column      = 欄位名
+
+        返回 {"exists": bool, "db_file": str, "table": str, "column": str}
+        """
+        return self.store.check_column(module_name, table, column)
+
     def close(self):
         self.store.close()

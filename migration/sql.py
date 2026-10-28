@@ -343,6 +343,37 @@ class SqlStore:
         return self.conn.execute(
             "SELECT COUNT(*) FROM migration_log").fetchone()[0]
 
+    def check_column(self, module_name, table, column):
+        """真實檢查：column 存唔存在（PRAGMA table_info 權威，唔 hardcode）
+
+        module_name = taxonomy.registry.meta（邊個 module；決定 db 檔）
+        table       = 張表名
+        column      = 欄位名
+
+        返回 {"exists": bool, "db_file": str, "table": str, "column": str}
+        """
+        import os
+        db_file = None
+        exists = False
+        if module_name and table and column:
+            # module 名 -> db 檔（檔名 = meta.db，位置 = meta/ 資料夾）
+            p = os.path.join(r"C:\projects\meta", module_name,
+                             f"{module_name}.db")
+            if os.path.isfile(p):
+                db_file = p
+                import sqlite3 as _sq
+                c2 = _sq.connect(p)
+                try:
+                    cols = {r[1] for r in c2.execute(
+                        f"PRAGMA table_info('{table}')").fetchall()}
+                    exists = column in cols
+                except Exception:
+                    exists = False
+                finally:
+                    c2.close()
+        return {"exists": exists, "db_file": db_file,
+                "table": table, "column": column}
+
     def by_module(self):
         """按 module + type 統計（type_value 補名）"""
         rows = [dict(r) for r in self.conn.execute(

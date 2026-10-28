@@ -474,6 +474,24 @@ class SqlStore:
         except Exception:
             return None
 
+    def _taxonomy_meta_of(self, tid):
+        """taxonomy.registry.meta by id（零 hardcode）"""
+        if not tid:
+            return None
+        try:
+            import sqlite3 as _sq
+            _c = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            try:
+                _c.row_factory = _sq.Row
+                r = _c.execute(
+                    "SELECT meta FROM registry WHERE id = ?"
+                    " AND is_active = 1", (tid,)).fetchone()
+                return r["meta"] if r else None
+            finally:
+                _c.close()
+        except Exception:
+            return None
+
     def _attach_value_db(self):
         """ATTACH value.db 做 vdb（SSOT：值資產由 value module 擁有）
 
@@ -3710,6 +3728,36 @@ class SqlStore:
                                     1 if res["registered"] else 0
                     finally:
                         s2.close()
+                except Exception:
+                    answers[s["question_id"]] = 0
+            elif test == "check_column":
+                # 2026-10-29（用戶要求）：migrate_schema step 2 ——
+                # 真實檢查欄位存唔存在（PRAGMA table_info 權威）。
+                # value = 欄位名；target（module/table）由 migration_log
+                # 最近一次真實記錄話事（表話事，零 hardcode）：
+                #   taxonomy_id -> taxonomy.registry.meta（module 名）
+                #   structure_db_table -> target 表名
+                try:
+                    from migration import Migration as _M
+                    _m = _M()
+                    try:
+                        _logs = _m.logs(limit=1)
+                        if not _logs:
+                            answers[s["question_id"]] = 0
+                        else:
+                            _ml = _logs[0]
+                            module_name = self._taxonomy_meta_of(
+                                _ml.get("taxonomy_id"))
+                            if not module_name:
+                                answers[s["question_id"]] = 0
+                            else:
+                                r = _m.check_column(
+                                    module_name,
+                                    _ml.get("structure_db_table"), v)
+                                answers[s["question_id"]] = \
+                                    1 if r["exists"] else 0
+                    finally:
+                        _m.close()
                 except Exception:
                     answers[s["question_id"]] = 0
             else:
