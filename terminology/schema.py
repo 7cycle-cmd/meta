@@ -257,6 +257,7 @@ CREATE TABLE IF NOT EXISTS status (
 # expected_source：期望值來源（Table-driven，blackbox code = formula）
 #   question_id   = terminology.question.id
 #   formula_id    = template.formula.id（執行 blackbox 公式 -> 得到期望 value）
+#   formula       = formula 內容 snapshot（直接睇到係咩，2026-10-28 用戶要求）
 #   value         = 期望值（formula 執行結果 / 直接值）
 #   value_id      = value.db value.id（proof at db，2026-10-28）
 #   output_format = 輸出格式（預設 '1,0'：boolean 化）
@@ -268,6 +269,7 @@ CREATE TABLE IF NOT EXISTS expected_source (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     question_id       INTEGER NOT NULL,      -- terminology.question.id
     formula_id        INTEGER,               -- template.formula.id（blackbox 來源）
+    formula           TEXT,                   -- formula 內容 snapshot（直接睇）
     value             TEXT,                   -- 期望值（formula 執行結果 / 直接值）
     value_id          INTEGER,               -- value.db value.id（proof at db，2026-10-28）
     output_format     TEXT NOT NULL DEFAULT '1,0',  -- 輸出格式（1,0 boolean）

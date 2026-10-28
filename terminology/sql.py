@@ -504,6 +504,7 @@ class SqlStore:
         self._migrate_questions_6x2()
         self._migrate_expected_source_value_id()
         self._migrate_drop_formula_cutter_id()
+        self._migrate_expected_source_formula()
         self._migrate_question_expected_source_id()
         self._seed_step_input()
         self._migrate_source_register_defaults()
@@ -1188,6 +1189,45 @@ class SqlStore:
         print(f"[migrate] expected_source 重建（移除 formula_cutter_id）："
               f"{len(rows)} 行保留")
 
+    def _migrate_expected_source_formula(self):
+        """遷移（幂等）：expected_source 加 formula 欄（2026-10-28 用戶要求）
+
+        用戶：「+field : formula, so i can see what it is now」
+        直接睇到 formula 內容（唔使 JOIN template.db）。
+        回填：formula_id 已有 -> 由 template.db formula.full 抄入。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('expected_source')")}
+        if "formula" not in cols:
+            self.conn.execute(
+                "ALTER TABLE expected_source ADD COLUMN formula TEXT")
+            self.conn.commit()
+            print("[migrate] expected_source + formula 欄")
+        # 回填：formula_id -> template.db formula.full
+        rows = self.conn.execute(
+            "SELECT id, formula_id FROM expected_source"
+            " WHERE formula_id IS NOT NULL AND formula IS NULL").fetchall()
+        if rows:
+            try:
+                import sqlite3 as _sq
+                fc = _sq.connect(r"C:\projects\meta\template\template.db")
+                try:
+                    fc.row_factory = _sq.Row
+                    for r in rows:
+                        fr = fc.execute(
+                            "SELECT full FROM formula WHERE id = ?",
+                            (r["formula_id"],)).fetchone()
+                        if fr:
+                            self.conn.execute(
+                                "UPDATE expected_source SET formula = ?"
+                                " WHERE id = ?", (fr["full"], r["id"]))
+                    self.conn.commit()
+                finally:
+                    fc.close()
+            except Exception:
+                pass
+            print(f"[migrate] expected_source formula 回填：{len(rows)} 行")
+
     def _migrate_question_expected_source_id(self):
         """遷移（幂等）：question 加 expected_source_id 欄（2026-10-28 用戶要求）
 
@@ -1480,17 +1520,47 @@ class SqlStore:
                 "by_module": by_module}
 
     def set_expected_source(self, question_id, formula_id=None,
-                            value=None, output_format="1,0", value_id=None):
+                            value=None, output_format="1,0", value_id=None,
+                            formula=None):
         """設定一條 question 嘅期望值來源（Table-driven，冪等）
 
         question_id   = terminology.question.id
         formula_id    = template.formula.id（blackbox 公式，執行出期望）
+        formula       = formula 內容（直接睇；有內容 -> 自動登記 formula 表攞真 id）
         value         = 期望值（formula 執行結果 / 直接值）
         value_id      = value.db value.id（proof at db；value 自動登記）
         output_format = 輸出格式（1,0 boolean）
         """
         if value_id is None and value is not None:
             value_id = self.add_value(value)
+        # formula 內容 -> 登記 template.db 攞真 id（冇傳 formula_id 時）
+        formula_text = formula
+        if formula_id is None and formula_text:
+            try:
+                import sqlite3 as _sq
+                fc = _sq.connect(r"C:\projects\meta\template\template.db")
+                try:
+                    fc.row_factory = _sq.Row
+                    r = fc.execute(
+                        "SELECT id FROM formula WHERE full IS ?",
+                        (formula_text,)).fetchone()
+                    if r:
+                        formula_id = r["id"]
+                    else:
+                        cur = fc.execute(
+                            "INSERT INTO formula (full) SELECT ?"
+                            " WHERE NOT EXISTS"
+                            " (SELECT 1 FROM formula WHERE full IS ?)",
+                            (formula_text, formula_text))
+                        fc.commit()
+                        r2 = fc.execute(
+                            "SELECT id FROM formula WHERE full IS ?",
+                            (formula_text,)).fetchone()
+                        formula_id = r2["id"] if r2 else cur.lastrowid
+                finally:
+                    fc.close()
+            except Exception:
+                pass
         # 已有 -> 更新
         has = self.conn.execute(
             "SELECT id FROM expected_source WHERE question_id = ?"
@@ -1498,17 +1568,18 @@ class SqlStore:
         if has:
             self.conn.execute(
                 "UPDATE expected_source SET"
-                " value = ?, value_id = ?, output_format = ?, updated_at ="
+                " value = ?, value_id = ?, output_format = ?,"
+                " formula = COALESCE(?, formula), updated_at ="
                 " datetime('now','localtime') WHERE id = ?",
-                (value, value_id, output_format, has["id"]))
+                (value, value_id, output_format, formula_text, has["id"]))
             rid = has["id"]
         else:
             cur = self.conn.execute(
                 "INSERT INTO expected_source"
-                " (question_id, formula_id, value,"
+                " (question_id, formula_id, formula, value,"
                 "  value_id, output_format)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (question_id, formula_id, value,
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (question_id, formula_id, formula_text, value,
                  value_id, output_format))
             rid = cur.lastrowid
         self.conn.commit()
