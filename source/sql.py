@@ -51,6 +51,159 @@ class SqlStore:
         self._seed_api_refs()
         self._migrate_api_proven()   # 2026-10-28：api.proven 欄
         self.conn.commit()
+        # 2026-10-28（用戶要求）：structure_resource 要登記齊全部資源
+        # （api/schema/function/tool），唔可以淨係 schema
+        self._register_structure_resources()
+
+    def _register_structure_resources(self):
+        """登記 source 全部資源入 structure_resource（冪等）
+
+        用戶要求（2026-10-28）：structure module 係所有資源嘅統一登記處，
+        唔可以淨係 type=schema。呢度登記 4 類：
+            api      = source.db api 表 13 條（真實，唔 hardcode）
+            schema   = schema.py *_DDL（AST 掃）
+            function = 全部 .py public function/class（AST 掃，零 hardcode）
+            tool     = tool.db registry（module_id -> taxonomy 名）
+
+        冪等：add_structure_resource 內部 WHERE NOT EXISTS。
+        """
+        try:
+            from structure import Structure as _S
+            _st = _S()
+            try:
+                import sqlite3 as _sq
+                # structure ids（source module_id = taxonomy.registry 12）
+                _c = _sq.connect(r"C:\projects\meta\structure\structure.db")
+                _c.row_factory = _sq.Row
+                try:
+                    cmp = _c.execute(
+                        "SELECT sm.id, sm.value FROM structure_module sm"
+                        " JOIN structure_type t ON t.id = sm.structure_type_id"
+                        " WHERE sm.module_id = ? AND t.meta = 'package'"
+                        " LIMIT 1", (12,)).fetchone()
+                    pkg_id = cmp["id"] if cmp else None
+                    files = {r["value"]: r["id"] for r in _c.execute(
+                        "SELECT sm.id, sm.value FROM structure_module sm"
+                        " JOIN structure_type t ON t.id = sm.structure_type_id"
+                        " WHERE sm.module_id = ? AND t.meta = 'file'", (12,))}
+                finally:
+                    _c.close()
+                if not pkg_id:
+                    return
+                n = {"api": 0, "schema": 0, "function": 0, "tool": 0}
+                # 1. api（source.db api 表）
+                for a in self.apis():
+                    _st.add_structure_resource(
+                        _st.store.resource_type_id("api"),
+                        f"{a['api_type']} {a['api']}", pkg_id)
+                    n["api"] += 1
+                # 2. schema + function（AST 掃，零 hardcode）
+                lines = self._ast_scan_source()
+                seen_fn = set()
+                for fn, name, line, kind in lines:
+                    fid = files.get(fn)
+                    if kind == "schema":
+                        _st.add_structure_resource(
+                            _st.store.resource_type_id("schema"), name,
+                            pkg_id, line_number=line, file_id=fid)
+                        n["schema"] += 1
+                    elif kind in ("function", "class"):
+                        key = (fn, name)
+                        if key in seen_fn:
+                            continue
+                        seen_fn.add(key)
+                        _st.add_structure_resource(
+                            _st.store.resource_type_id("function"),
+                            f"{fn}:{name}", pkg_id,
+                            line_number=line, file_id=fid)
+                        n["function"] += 1
+                # 3. tool（tool.db registry -> taxonomy 名）
+                try:
+                    tc = _sq.connect(r"C:\projects\meta\tool\tool.db")
+                    tc.row_factory = _sq.Row
+                    try:
+                        tx = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+                        tx.row_factory = _sq.Row
+                        try:
+                            for r in tc.execute(
+                                    "SELECT module_id FROM registry"
+                                    " WHERE is_active = 1"):
+                                nr = tx.execute(
+                                    "SELECT meta FROM registry WHERE id = ?",
+                                    (r["module_id"],)).fetchone()
+                                name = nr["meta"] if nr else f"module_{r['module_id']}"
+                                _st.add_structure_resource(
+                                    _st.store.resource_type_id("tool"),
+                                    name, pkg_id)
+                                n["tool"] += 1
+                        finally:
+                            tx.close()
+                    finally:
+                        tc.close()
+                except Exception:
+                    pass
+                print(f"[source] structure_resource 登記："
+                      f"api={n['api']} schema={n['schema']}"
+                      f" function={n['function']} tool={n['tool']}")
+            finally:
+                _st.close()
+        except Exception:
+            pass
+
+    def _ast_scan_source(self):
+        """AST 掃 source module：返回 [(file, name, line, kind)]（零 hardcode）
+
+        2026-10-28（收斂）：schema 只掃 schema.py（DDL 唯一來源）；
+        function/class 掃全部公開 .py（每個 symbol 一個 file 首現）。
+        """
+        import os as _os
+        import importlib.util as _ilu
+        _ast_sp = _ilu.spec_from_file_location(
+            "_stdlib_ast", _os.path.join(_os.path.dirname(_os.__file__), "ast.py"))
+        _ast_m = _ilu.module_from_spec(_ast_sp)
+        _ast_sp.loader.exec_module(_ast_m)
+        out = []
+        folder = _os.path.join(_os.path.dirname(
+            _os.path.dirname(_os.path.abspath(__file__))), "source")
+        # schema：只掃 schema.py（避免 sql.py/api.py 重複 reference）
+        schema_path = _os.path.join(folder, "schema.py")
+        try:
+            with open(schema_path, "r", encoding="utf-8") as f:
+                tree = _ast_m.parse(f.read(), filename=schema_path)
+            for node in _ast_m.walk(tree):
+                if isinstance(node, _ast_m.Assign):
+                    for t in node.targets:
+                        if isinstance(t, _ast_m.Name) and t.id.endswith("_DDL"):
+                            out.append(("schema.py", t.id, node.lineno, "schema"))
+        except (SyntaxError, OSError):
+            pass
+        # function/class：掃全部公開 .py（每 symbol 第一出現）
+        seen = set()
+        for fn in sorted(_os.listdir(folder)):
+            if not fn.endswith(".py") or fn.startswith("_"):
+                continue
+            path = _os.path.join(folder, fn)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    tree = _ast_m.parse(f.read(), filename=path)
+            except (SyntaxError, OSError):
+                continue
+            for node in _ast_m.walk(tree):
+                if isinstance(node, (_ast_m.FunctionDef, _ast_m.AsyncFunctionDef)):
+                    if node.name.startswith("_"):
+                        continue
+                    if (fn, node.name) in seen:
+                        continue
+                    seen.add((fn, node.name))
+                    out.append((fn, node.name, node.lineno, "function"))
+                elif isinstance(node, _ast_m.ClassDef):
+                    if node.name.startswith("_"):
+                        continue
+                    if (fn, node.name) in seen:
+                        continue
+                    seen.add((fn, node.name))
+                    out.append((fn, node.name, node.lineno, "class"))
+        return out
 
     def _migrate_api_proven(self):
         """遷移（幂等）：api 加 proven 欄（2026-10-28 用戶要求）
