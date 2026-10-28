@@ -296,6 +296,7 @@ CREATE TABLE IF NOT EXISTS step_output (
     expert_id     INTEGER,                   -- 邊個判斷（identity / skill.id）
     expected_id   INTEGER,                   -- expected.id（期望 1/0）
     value         INTEGER NOT NULL CHECK (value IN (0,1)),  -- 實際輸出 1,0
+    output_value  TEXT,                      -- 實際輸出 snapshot（累計數等，2026-10-28）
     output_format TEXT    NOT NULL DEFAULT '1,0',
     is_active     BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),

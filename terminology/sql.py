@@ -502,7 +502,9 @@ class SqlStore:
         self._migrate_migrate_audit_flow()
         self._migrate_migration_flows()
         self._migrate_questions_6x2()
+        self._repair_dangling_steps()
         self._migrate_expected_source_value_id()
+        self._migrate_step_output_value()
         self._migrate_drop_formula_cutter_id()
         self._migrate_expected_source_formula()
         self._migrate_question_expected_source_id()
@@ -1136,6 +1138,48 @@ class SqlStore:
         print(f"[migrate] question 6×2 seed：+{len(rows)} 條"
               "（每個 condition 6 維度 × ==/!= = 12）")
 
+    def _repair_dangling_steps(self):
+        """遷移（幂等）：修 dangling step（question_id 指住唔存在嘅 question）
+
+        問題（2026-10-28）：刪 how_much(7) question 之後，step 仲指住舊
+        question（例如 step159 -> question 91，但 91 已刪）。
+        修法：step 嘅 condition（由 action 名查）-> 攞該 condition 第一條
+        有效 question（6 維度）補返。how much 累計由 _save_step_outputs
+        （flow 行完先寫），唔靠 step 指住 how_much question。
+        """
+        rows = self.conn.execute(
+            "SELECT s.id, s.question_id, s.action FROM step s").fetchall()
+        n = 0
+        for s in rows:
+            q = self.conn.execute(
+                "SELECT id FROM question WHERE id = ?",
+                (s["question_id"],)).fetchone()
+            if q:
+                continue  # 有效
+            # condition：由 action 名（condition meta = action 名）
+            cr = self.conn.execute(
+                "SELECT id FROM condition WHERE meta = ?",
+                (s["action"],)).fetchone()
+            if not cr:
+                continue
+            # 攞該 condition 第一條有效 question（== op, expected=1, 6 維度）
+            rep = self.conn.execute(
+                "SELECT q.id FROM question q"
+                " JOIN operator o ON o.id = q.operator_id"
+                " WHERE q.condition_id = ? AND o.meta = '=='"
+                " AND q.expected_id IS NOT NULL"
+                " AND q.\"5w2h_id\" != 7"
+                " ORDER BY q.id LIMIT 1", (cr["id"],)).fetchone()
+            if not rep:
+                continue
+            self.conn.execute(
+                "UPDATE step SET question_id = ? WHERE id = ?",
+                (rep["id"], s["id"]))
+            n += 1
+        self.conn.commit()
+        if n:
+            print(f"[migrate] 修 dangling step：{n} 個（question_id 補返）")
+
     def _migrate_expected_source_value_id(self):
         """遷移（幂等）：expected_source 加 value_id 欄（2026-10-28 用戶要求）
 
@@ -1227,6 +1271,20 @@ class SqlStore:
             except Exception:
                 pass
             print(f"[migrate] expected_source formula 回填：{len(rows)} 行")
+
+    def _migrate_step_output_value(self):
+        """遷移（幂等）：step_output 加 output_value 欄（2026-10-28 用戶要求）
+
+        how much 累計（flow + step）寫入 output_value（snapshot），
+        value 保持 0/1（CHECK 唔畀寫大數）。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('step_output')")}
+        if "output_value" not in cols:
+            self.conn.execute(
+                "ALTER TABLE step_output ADD COLUMN output_value TEXT")
+            self.conn.commit()
+            print("[migrate] step_output + output_value 欄（how much 累計）")
 
     def _migrate_question_expected_source_id(self):
         """遷移（幂等）：question 加 expected_source_id 欄（2026-10-28 用戶要求）
@@ -1476,6 +1534,12 @@ class SqlStore:
                 skipped += 1
                 continue
             table, column = src
+            # 2026-10-28（用戶修正）：how much（5w2h_id=7）唔係一步攞到——
+            # 係 flow + step 累計結果（verify_count / verify_rowcount 步驟先計到）。
+            # 呢度唔建 expected_source（點對點證明 = 成條 flow 行完先準確）。
+            if q["5w2h_id"] == 7:
+                skipped += 1
+                continue
             # 已經有 expected_source -> 跳過（冪等）
             has = self.conn.execute(
                 "SELECT id FROM expected_source WHERE question_id = ?",
@@ -1504,8 +1568,9 @@ class SqlStore:
             if sid is None:
                 skipped += 1
                 continue
-            # formula：準確格式（限 output by id，指明 db/表/condition/維度，
+            # formula：準確格式（限 output by id，指明 db_file/表/condition/維度，
             # 唔 select *）—— condition × 5W2H 維度都要指明先精準
+            db_file = os.path.basename(dbp) if dbp else ""
             ftext = (f'xxx=<select id from "{tbl}" '
                      f'where condition_id = "{q["condition_id"]}" '
                      f'and "5w2h_id" = "{q["5w2h_id"]}">')
@@ -1513,6 +1578,9 @@ class SqlStore:
             try:
                 esid = self.set_expected_source(q["id"], value=str(sid),
                                                 formula=ftext)
+                # formula 表補 db_file（指明邊個 db，令 formula 更準確）
+                if esid:
+                    self._formula_db_file(ftext, db_file)
                 # 同步 question.expected_source_id（直接指住）
                 self.conn.execute(
                     "UPDATE question SET expected_source_id = ? WHERE id = ?",
@@ -1524,6 +1592,28 @@ class SqlStore:
         self.conn.commit()
         return {"created": created, "skipped": skipped,
                 "by_module": by_module}
+
+    def _formula_db_file(self, formula_text, db_file):
+        """template.formula 補 db_file 欄（指明邊個 db，零 hardcode）"""
+        if not formula_text or not db_file:
+            return
+        try:
+            import sqlite3 as _sq
+            fc = _sq.connect(r"C:\projects\meta\template\template.db")
+            try:
+                fc.row_factory = _sq.Row
+                r = fc.execute(
+                    "SELECT id FROM formula WHERE full IS ?",
+                    (formula_text,)).fetchone()
+                if r:
+                    fc.execute(
+                        "UPDATE formula SET db_file = ? WHERE id = ?"
+                        " AND db_file IS NULL", (db_file, r["id"]))
+                    fc.commit()
+            finally:
+                fc.close()
+        except Exception:
+            pass
 
     def set_expected_source(self, question_id, formula_id=None,
                             value=None, output_format="1,0", value_id=None,
@@ -2998,6 +3088,40 @@ class SqlStore:
         self.conn.commit()
         return first_id
 
+    def _save_step_outputs(self, run_id, value_id, steps, judged):
+        """flow 行完寫 step_output（每步實際輸出 1/0）—— how much = 累計
+
+        用戶（2026-10-28）：how much 唔係一步攞到，係 flow + step 累計。
+        - 每步輸出 = 實際判斷（PASS=1 / FAIL=0）入 step_output
+        - how much 維度（verify_count / verify_rowcount 累計 steps）：
+          flow 行完先寫累計（總 PASS 步數 / 真行數），唔係一步攞。
+        冪等：UNIQUE(run_id, step_id, question_id)。
+        """
+        if not judged:
+            return
+        total_pass = sum(1 for j in judged if j["is_pass"])
+        for s, j in zip(steps, judged):
+            qid = s["question_id"]
+            # 呢步實際輸出（PASS=1 FAIL=0）
+            self.conn.execute(
+                "INSERT INTO step_output"
+                " (step_id, run_id, question_id, value)"
+                " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM step_output"
+                "  WHERE run_id = ? AND step_id = ? AND question_id = ?)",
+                (s["id"], run_id, qid, 1 if j["is_pass"] else 0,
+                 run_id, s["id"], qid))
+            # how much 維度（verify_rowcount / verify_count = 累計 step）：
+            # flow 行完先寫累計（總 PASS 步數做 snapshot，value 保持 0/1）
+            action = s.get("action") or ""
+            if action in ("verify_rowcount", "verify_count") or \
+                    s.get("w5w2h") == "how much":
+                self.conn.execute(
+                    "UPDATE step_output SET output_value = ?"
+                    " WHERE run_id = ? AND step_id = ? AND question_id = ?",
+                    (str(total_pass), run_id, s["id"], qid))
+        self.conn.commit()
+
     # ---------- word_category（2026-10-26：approved word 自動登記） ----------
     def _register_word_category(self, word):
         """一個 word 全 PASS 之後自動 upsert word_category（真 registry）
@@ -3188,6 +3312,7 @@ class SqlStore:
         """
         sql = """SELECT s.id, s.flow_id, s.seq_id, sq.seq,
                         s.question_id,
+                        s.action,
                         q.condition_id, t.meta AS test,
                         t.meta AS condition_meta,
                         q."5w2h_id", w.meta AS w5w2h,
@@ -3534,6 +3659,8 @@ class SqlStore:
         if save:
             run_id = self._save_run(flow_name, value_id, stopped,
                                     status_id, judged, role_id, rule_id)
+            # step_output：每步實際輸出（how much = flow 累計 PASS 步數）
+            self._save_step_outputs(run_id, value_id, steps, judged)
             # 證據：全 PASS -> 每個 PASS step 寫一條 evidence；失敗 run = 冇
             if status_id == 1 and value_id:
                 evidence_id = self._save_evidence(run_id, value_id,
