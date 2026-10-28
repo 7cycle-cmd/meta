@@ -5,16 +5,14 @@
     sync 係 migration 一種（type 字典：schema/seed/sync/cutover/other）
     呢張表 = 每個 module 改過邊張表邊行嘅完整記錄
     type 表 value 幫助識別類型（唔使淨靠 id）
-    migration 都要有 flow × step（每個 step = 1 line / 1 action，
-    input -> output），step_log 記錄每次執行嘅實際 input/output
+    flow / step / step_log 已全部搬去 terminology.db（2026-10-28 用戶確認）——
+    migration_log 只保留 run_id，flow_id/step_id 由 terminology run 反查
 """
 
 import os
 import sqlite3
 
-from .schema import (MIGRATION_LOG_DDL, TYPE_DDL,  # noqa: F401（逐個 symbol）
-                     MIGRATION_FLOW_DDL, MIGRATION_STEP_DDL,
-                     MIGRATION_STEP_LOG_DDL)
+from .schema import (MIGRATION_LOG_DDL, TYPE_DDL)  # noqa: F401
 
 DB_PATH = r"C:\projects\meta\migration\migration.db"
 
@@ -27,50 +25,6 @@ DEFAULT_TYPES = [
     ("other", "其他"),
 ]
 
-# flow × step：每種 migration type 一條 flow，好多步（1 step = 1 line/1 action）
-# action = 動作名；input_desc = 食咩；output_desc = 出咩
-MIGRATION_FLOWS = {
-    "schema": [
-        ("inspect_table", "table 名", "現有欄位清單（PRAGMA table_info）"),
-        ("check_column", "欄位名", "欄位存在/唔存在（0/1）"),
-        ("add_column", "欄位名 + 型別", "ALTER TABLE 完成"),
-        ("backfill_column", "舊資料 + 新欄", "回填行數"),
-        ("verify_column", "新欄位名", "PRAGMA 確認欄位存在"),
-        ("verify_rowcount", "表名", "行數零損失確認"),
-        ("report", "全部結果", "migration 報告"),
-    ],
-    "seed": [
-        ("check_dictionary", "字典表名", "現有值清單"),
-        ("check_symbol", "symbol 名", "已存在/未存在（0/1）"),
-        ("insert_symbol", "symbol + description", "INSERT 完成（冪等）"),
-        ("verify_symbol", "symbol 名", "SELECT 確認存在"),
-        ("report", "全部結果", "seed 報告"),
-    ],
-    "sync": [
-        ("check_source", "來源名", "現有記錄"),
-        ("fetch_external", "外部 API URL", "原始返回（raw_json）"),
-        ("map_to_local", "原始數據", "本地結構映射"),
-        ("upsert_local", "映射後數據", "INSERT/UPDATE 完成（冪等）"),
-        ("verify_count", "表名", "新增/更新行數"),
-        ("report", "全部結果", "sync 報告"),
-    ],
-    "cutover": [
-        ("backup_table", "表名", "備份完成"),
-        ("create_new_table", "新 DDL", "新表建立"),
-        ("copy_rows", "舊表 -> 新表", "複製行數"),
-        ("verify_rowcount", "新舊表", "行數對比（零損失）"),
-        ("swap_table", "新表名", "RENAME 完成"),
-        ("verify_foreign_keys", "表名", "foreign_key_check 乾淨"),
-        ("report", "全部結果", "cutover 報告"),
-    ],
-    "other": [
-        ("inspect", "描述", "現狀"),
-        ("action", "輸入", "輸出"),
-        ("verify", "預期", "實際"),
-        ("report", "全部結果", "報告"),
-    ],
-}
-
 
 class SqlStore:
     def __init__(self, db_path=DB_PATH):
@@ -78,40 +32,27 @@ class SqlStore:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute(TYPE_DDL)
         self.conn.execute(MIGRATION_LOG_DDL)
-        self.conn.execute(MIGRATION_FLOW_DDL)
-        self.conn.execute(MIGRATION_STEP_DDL)
-        self.conn.execute(MIGRATION_STEP_LOG_DDL)
         self._seed_types()
-        self._seed_flows()
         self._migrate_type_id()
         self._migrate_log_flow_columns()
+        self._migrate_drop_flow_tables()
         self.conn.commit()
 
-    def _seed_flows(self):
-        """flow × step seed（冪等：WHERE NOT EXISTS）
+    def _migrate_drop_flow_tables(self):
+        """遷移（幂等）：移除 rubbish flow / step / step_log 表（2026-10-28 用戶）
 
-        每個 migration type 一條 flow + 好多 step（1 step = 1 action）。
+        flow / step / step_log 已全部喺 terminology.db（用戶確認），呢三張
+        duplicate 表直接 drop（唔保留資料——terminology.db 先係權威）。
         """
-        for type_value, steps in MIGRATION_FLOWS.items():
-            # flow：migrate_<type>
-            flow_name = f"migrate_{type_value}"
-            self.conn.execute(
-                "INSERT INTO flow (flow_name)"
-                " SELECT ? WHERE NOT EXISTS"
-                " (SELECT 1 FROM flow WHERE flow_name = ?)",
-                (flow_name, flow_name))
-            fr = self.conn.execute(
-                "SELECT id FROM flow WHERE flow_name = ?",
-                (flow_name,)).fetchone()
-            if not fr:
+        for t in ("step_log", "step", "flow"):
+            has_table = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (t,)).fetchone()
+            if not has_table:
                 continue
-            for seq, (action, inp, out) in enumerate(steps, start=1):
-                self.conn.execute(
-                    "INSERT INTO step (flow_id, seq, action, input_desc,"
-                    "  output_desc)"
-                    " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
-                    " (SELECT 1 FROM step WHERE flow_id = ? AND seq = ?)",
-                    (fr["id"], seq, action, inp, out, fr["id"], seq))
+            self.conn.execute(f"DROP TABLE {t}")
+            print(f"[migration] 移除 rubbish 表 {t}")
+        self.conn.commit()
 
     def _migrate_log_flow_columns(self):
         """遷移（幂等）：migration_log 加 flow_id / step_id 欄"""
@@ -211,8 +152,7 @@ class SqlStore:
         row_id         = 改邊行（0 = 全表）
         value          = 提交值（跑 flow 用；冇 -> 用 description 做 value）
         value_id       = 已存在 value.id（重用，唔新開；優先於 value）
-        step_values    = {step_action: {"input": ..., "output": ...}} 每步實際值；
-                         冇傳 -> 自動執行該 type flow 每步（真查 DB 攞值）
+        step_values    = 保留參數（flow/step 已喺 terminology.db，唔再自行執行）
         run_flow       = False 就唔自動跑 terminology flow（內部用，避免遞歸）
         """
         # taxonomy_id 反查（零 hardcode）
@@ -222,13 +162,8 @@ class SqlStore:
         if run_id is None and run_flow:
             run_id = self._auto_run(value or f"migration:{table or module_name}",
                                     value_id=value_id)
-        # 執行 flow steps（呢個 type 嘅 migration 流程）
-        if run_flow:
-            flow_id, step_id, step_rows = self._exec_flow(
-                migration_type, table, module_name, step_values)
-        else:
-            flow_id = step_id = None
-            step_rows = []
+        # flow_id / step_id 由 terminology run 反查（flow/step 已喺 terminology.db）
+        flow_id, step_id = self._run_flow_step(run_id)
         if table:
             self.conn.execute(
                 "INSERT INTO migration_log"
@@ -259,173 +194,30 @@ class SqlStore:
             " AND taxonomy_id IS ? AND structure_db_table IS ?"
             " AND type_id = ? AND description IS ?",
             (run_id, taxonomy_id, table, tid, description)).fetchone()
-        log_id = r["id"] if r else None
-        # 寫 step_log（每步 input -> output，真值入 value.db）
-        if log_id:
-            for (sid, action, inp_vid, out_vid, inp_txt, out_txt, ok) in step_rows:
-                self.conn.execute(
-                    "INSERT INTO step_log (run_id, step_id, input_value_id,"
-                    "  output_value_id, input_value, output_value, is_pass)"
-                    " SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
-                    " (SELECT 1 FROM step_log WHERE run_id = ? AND step_id = ?)",
-                    (log_id, sid, inp_vid, out_vid, inp_txt, out_txt, ok,
-                     log_id, sid))
-            self.conn.commit()
-        return log_id
+        return r["id"] if r else None
 
-    def _exec_flow(self, migration_type, table, module_name, step_values):
-        """執行 migration flow 嘅 steps（1 step = 1 action），每步真查 DB
+    def _run_flow_step(self, run_id):
+        """由 terminology run id 反查 flow_id / step_id（喺 terminology.db）
 
-        用戶要求（2026-10-28）：
-            - migration 都要有 flow × step
-            - each step = 1 line / 1 action
-            - input -> output
-            - all value must proof at DB（input/output 都入 value.db）
-
-        自動執行：呢個 type 嘅 flow 每步都真係查 DB（PRAGMA / COUNT /
-        sqlite_master），攞真實 input/output 值。
-        返回 (flow_id, stop_step_id, [(step_id, action, in_vid, out_vid,
-              in_txt, out_txt, is_pass), ...])
+        返回 (flow_id, step_id)；搵唔到 -> (None, None)
         """
-        flow_name = f"migrate_{migration_type}"
-        fr = self.conn.execute(
-            "SELECT id FROM flow WHERE flow_name = ?", (flow_name,)).fetchone()
-        if not fr:
-            return None, None, []
-        flow_id = fr["id"]
-        steps = [dict(r) for r in self.conn.execute(
-            "SELECT * FROM step WHERE flow_id = ? AND is_active = 1"
-            " ORDER BY seq", (flow_id,))]
-        # 真 DB 上下文（被遷移嘅表）
-        table = table or ""
-        rows_out = []
-        stop_step = None
-        import sqlite3 as _sq
-        db_path = rf"C:\projects\meta\{module_name}\{module_name}.db"
-        tctx = None
-        try:
-            if module_name and os.path.isfile(db_path):
-                tctx = _sq.connect(db_path)
-                tctx.row_factory = _sq.Row
-        except Exception:
-            tctx = None
-        for st in steps:
-            action = st["action"]
-            inp = st["input_desc"]
-            out = "done"
-            ok = 1
-            # 每 action 真查（1 line = 1 action）
-            try:
-                if tctx is not None and table:
-                    if action == "inspect_table":
-                        cols = [r[1] for r in tctx.execute(
-                            f"PRAGMA table_info('{table}')")]
-                        out = ", ".join(cols)
-                        ok = 1 if cols else 0
-                    elif action == "check_column":
-                        cols = {r[1] for r in tctx.execute(
-                            f"PRAGMA table_info('{table}')")}
-                        out = "1" if (value or "").split(":")[0] in cols else "0"
-                    elif action == "add_column":
-                        cols = {r[1] for r in tctx.execute(
-                            f"PRAGMA table_info('{table}')")}
-                        out = f"cols={len(cols)}"
-                    elif action == "verify_column":
-                        cols = {r[1] for r in tctx.execute(
-                            f"PRAGMA table_info('{table}')")}
-                        target = (value or "").split(":")[0]
-                        out = "1" if target in cols else "0"
-                        ok = 1 if target in cols else 0
-                    elif action in ("verify_rowcount", "verify_count"):
-                        n = tctx.execute(
-                            f"SELECT COUNT(*) FROM '{table}'").fetchone()[0]
-                        out = str(n)
-                        ok = 1
-                    elif action in ("check_dictionary", "check_source"):
-                        try:
-                            n = tctx.execute(
-                                f"SELECT COUNT(*) FROM '{table}'").fetchone()[0]
-                        except Exception:
-                            n = 0
-                        out = f"rows={n}"
-                        ok = 1
-                    elif action in ("check_symbol", "verify_symbol"):
-                        try:
-                            r = tctx.execute(
-                                f"SELECT COUNT(*) FROM '{table}'"
-                                f" WHERE meta IS ? OR value IS ?",
-                                (value, value)).fetchone()
-                            out = str(r[0] if r else 0)
-                            ok = 1 if (r and r[0]) else 0
-                        except Exception:
-                            out = "0"
-                            ok = 0
-                    elif action.startswith("verify_foreign"):
-                        try:
-                            viol = tctx.execute(
-                                "PRAGMA foreign_key_check").fetchall()
-                            out = f"violations={len(viol)}"
-                            ok = 1 if not viol else 0
-                        except Exception:
-                            out = "check-error"
-                            ok = 1
-                    elif action in ("insert_symbol", "upsert_local",
-                                    "copy_rows", "create_new_table",
-                                    "backup_table", "swap_table",
-                                    "backfill_column"):
-                        out = "applied"
-                        ok = 1
-                    elif action == "fetch_external":
-                        out = "external-fetch"
-                        ok = 1
-                    else:
-                        out = "done"
-                        ok = 1
-                else:
-                    out = "no-context"
-                    ok = 1
-            except Exception as e:
-                out = f"error:{e}"
-                ok = 0
-            # input/output 都入 value.db（proof at DB）
-            in_vid = self._value_id_of(inp)
-            out_vid = self._value_id_of(out)
-            rows_out.append((st["id"], action, in_vid, out_vid,
-                             inp, out, ok))
-            if not ok and stop_step is None:
-                stop_step = st["id"]
-        if tctx is not None:
-            try:
-                tctx.close()
-            except Exception:
-                pass
-        if stop_step is None and rows_out:
-            stop_step = rows_out[-1][0]
-        return flow_id, stop_step, rows_out
-
-    def _value_id_of(self, text):
-        """value.db 登記一個值（冪等），返回 value.id —— proof at DB"""
+        if not run_id:
+            return None, None
         try:
             import sqlite3 as _sq
-            c = _sq.connect(r"C:\projects\meta\value\value.db")
+            c = _sq.connect(r"C:\projects\meta\terminology\terminology.db")
             try:
                 c.row_factory = _sq.Row
                 r = c.execute(
-                    "SELECT id FROM value WHERE value IS ?", (text,)).fetchone()
-                if r:
-                    return r["id"]
-                cur = c.execute(
-                    "INSERT INTO value (value) SELECT ? WHERE NOT EXISTS"
-                    " (SELECT 1 FROM value WHERE value IS ?)",
-                    (text, text))
-                c.commit()
-                r2 = c.execute(
-                    "SELECT id FROM value WHERE value IS ?", (text,)).fetchone()
-                return r2["id"] if r2 else cur.lastrowid
+                    "SELECT flow_id, step_id FROM run WHERE id = ?",
+                    (run_id,)).fetchone()
+                if not r:
+                    return None, None
+                return r["flow_id"], r["step_id"]
             finally:
                 c.close()
         except Exception:
-            return None
+            return None, None
 
     def _taxonomy_id(self, module_name):
         """taxonomy.registry.id by meta（零 hardcode，搵唔到 -> None）"""
