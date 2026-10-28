@@ -59,6 +59,16 @@ class Value:
         """一個拆分值有冇權 call terminology"""
         return self.store.can_call_terminology(split_value_id, terminology_id)
 
+    def proof_of(self, value):
+        """一個 value 嘅完整證明鏈（值 → 拆分 → 授權 → 身份 → 證明）
+
+        返回 {"value", "found", ...}：
+            冇呢個值 -> {"value": value, "found": False}
+            有 -> value 行 + split_total + split_value +
+                  permit（terminology 授權）+ identity + runs/evidence（terminology）
+        """
+        return self.store.proof_of(value)
+
     def count(self):
         return self.store.count()
 

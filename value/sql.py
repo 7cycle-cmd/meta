@@ -281,5 +281,65 @@ class SqlStore:
     def count(self):
         return self.conn.execute("SELECT COUNT(*) c FROM value").fetchone()["c"]
 
+    def proof_of(self, value):
+        """一個 value 嘅完整證明鏈（值 → 拆分 → 授權 → 身份 → 證明）
+
+        返回：
+            {"value": str, "found": bool, ...}
+        有 -> value 行 + split_totals + split_values + terminology（授權）
+              + identity（value×condition×flow×step）+ runs（terminology 證明）
+        """
+        r = self.conn.execute(
+            "SELECT * FROM value WHERE value IS ?", (value,)).fetchone()
+        if not r:
+            return {"value": value, "found": False}
+        out = {"value": value, "found": True, "value_row": dict(r)}
+        vid = r["id"]
+        # split
+        out["split_totals"] = self.split_totals(value_id=vid)
+        out["split_values"] = self.split_values(value_id=vid)
+        # terminology 授權（本地表）
+        out["terminology"] = [
+            dict(x) for x in self.conn.execute(
+                "SELECT t.*, sv.split_value FROM terminology t"
+                " LEFT JOIN split_value sv ON sv.id = t.split_value_id"
+                " WHERE t.split_value_id IN"
+                " (SELECT id FROM split_value WHERE value_id = ?)"
+                " AND t.is_active = 1", (vid,))]
+        # identity（identity.db：value × condition × flow × step）
+        out["identity"] = []
+        try:
+            from identity import Identity
+            ident = Identity()
+            try:
+                out["identity"] = ident.list_all(value_id=vid)
+            finally:
+                ident.close()
+        except Exception:
+            pass
+        # runs + evidence（terminology.db）
+        out["runs"] = []
+        out["evidence"] = []
+        try:
+            from terminology import Terminology
+            t = Terminology()
+            try:
+                # 直接按 value_id 查 run（唔靠 value 名 filter）
+                out["runs"] = [dict(r) for r in t.store.conn.execute(
+                    "SELECT r.id AS run_id, f.flow_name, r.status_id,"
+                    " r.step_id, r.role_id, r.rule_id, r.created_at"
+                    " FROM run r JOIN flow f ON f.id = r.flow_id"
+                    " WHERE r.value_id = ? AND r.is_active = 1"
+                    " ORDER BY r.id DESC LIMIT 10", (vid,))]
+                for x in out["runs"]:
+                    x["status"] = ("approved" if x["status_id"] == 1
+                                   else "rejected")
+                out["evidence"] = t.evidence_of(value)
+            finally:
+                t.close()
+        except Exception:
+            pass
+        return out
+
     def close(self):
         self.conn.close()

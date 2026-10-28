@@ -37,6 +37,7 @@ if _ast_mod is None or (getattr(_ast_mod, "__file__", "") or "").startswith(r"C:
 
 import json
 import sys
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .api import Value
@@ -85,6 +86,11 @@ class _Handler(BaseHTTPRequestHandler):
                     self._send(400, {"error": "需要 value"})
                 else:
                     self._send(200, v.by_value(val) or {"error": "唔存在"})
+            elif path.startswith("/value/") and path.endswith("/proof"):
+                # /value/<value>/proof —— 完整證明鏈（要喺 /value/<id> 之前）
+                val = urllib.parse.unquote(
+                    path[len("/value/"):-len("/proof")])
+                self._send(200, v.proof_of(val))
             elif path.startswith("/value/"):
                 vid = int(path.rsplit("/", 1)[1])
                 self._send(200, v.get(vid) or {"error": "唔存在"})
