@@ -144,10 +144,10 @@ def import_permit_check(module_name, imported, symbols="*"):
 class SqlStore:
     def __init__(self, db_path=DB_PATH):
         # 2026-10-28（用戶要求）：import 都要 permit ——
-        # worker 唔可以靠 import 逃工。啟動時檢查自己 module 嘅 import
-        # 有冇 permit；冇 permit = 自動申請（import_request -> pending，
-        # 等 tool/monitor 批准）。申請咗（pending / approved）就照行；
-        # 申請都唔得先擋（PermissionError）。
+        # module 唔可以自己決定「申請咗就照行」。
+        # module 只知道「佢冇 permit」（have not）；
+        # 有冇得批係用戶 / tool / monitor 嘅決定（give to user）。
+        # 冇 permit = 擋住啟動 + 呈報用戶，等批先可以行。
         _ok = False
         try:
             from permit import Permit as _P
@@ -157,21 +157,25 @@ class SqlStore:
                 if chk["allowed"]:
                     _ok = True
                 else:
+                    # 冇 permit：申請（記錄需要）+ 擋住（唔照行）
                     req = _pp.request_import(
                         "terminology", ".schema", "ALL",
                         reason="terminology 啟動需要自己 schema")
-                    _ok = req.get("status") in ("pending", "approved")
-                    if _ok:
-                        print("[permit] terminology .schema 已申請"
-                              "（等 tool/monitor 批准）")
+                    print(
+                        f"[permit] terminology 冇 .schema import permit ——"
+                        f" 已申請（request_id={req.get('request_id')}），"
+                        f" 未有批准之前唔會啟動。"
+                        f" 請用 permit.approve_import({req.get('request_id')})"
+                        f" 批准後再啟動")
             finally:
                 _pp.close()
         except Exception:
-            _ok = True  # permit 系統未 ready（首次初始化）照行
+            pass
         if not _ok:
             raise PermissionError(
-                "[permit] terminology 申請唔到 .schema import"
-                "（等 tool/monitor 批准先可以啟動）")
+                "[permit] terminology 冇 .schema import permit ——"
+                " 唔可以啟動。請 approve 申請（give to user / tool / monitor"
+                " 決定）之後再試")
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         # 2026-10-27（用戶要求）：value 表升做獨立 module（value.db）
