@@ -32,8 +32,10 @@ class SqlStore:
             FUNCTION_DDL, FUNCTION_CLASS_DDL,
             ANALYZE_ROOT_DDL, ANALYZE_MODULE_DDL,
             ANALYZE_SKILL_DDL,
+            DECORATOR_DDL,
         ]))
         self.conn.commit()
+        self._seed_decorators()
 
     def close(self):
         try:
@@ -99,6 +101,45 @@ class SqlStore:
 
     def function_classes(self, active_only=True):
         sql = "SELECT * FROM function_class WHERE 1=1"
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY meta"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    # ---------- decorator 字典（2026-10-28 用戶：由 programming 搬嚟 ast） ----------
+    def _seed_decorators(self):
+        """確保 decorator 表有齊官方/實務 decorator（冪等）"""
+        for meta, desc in DEFAULT_DECORATORS:
+            self.conn.execute(
+                "INSERT INTO decorator (meta, description)"
+                " SELECT ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM decorator WHERE meta = ?)",
+                (meta, desc, meta))
+        self.conn.commit()
+
+    def add_decorator(self, meta, description=None, commit=True):
+        """登記一個 decorator（冪等）"""
+        self.conn.execute(
+            "INSERT INTO decorator (meta, description)"
+            " SELECT ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM decorator WHERE meta = ?)",
+            (meta, description, meta))
+        self.conn.execute(
+            "UPDATE decorator SET description = COALESCE(?, description)"
+            " WHERE meta = ?", (description, meta))
+        if commit:
+            self.conn.commit()
+        r = self.conn.execute(
+            "SELECT id FROM decorator WHERE meta = ?", (meta,)).fetchone()
+        return r["id"] if r else None
+
+    def decorator_id(self, meta):
+        r = self.conn.execute(
+            "SELECT id FROM decorator WHERE meta = ?", (meta,)).fetchone()
+        return r["id"] if r else None
+
+    def decorators(self, active_only=True):
+        sql = "SELECT * FROM decorator WHERE 1=1"
         if active_only:
             sql += " AND is_active = 1"
         sql += " ORDER BY meta"

@@ -24,6 +24,7 @@ class SqlStore:
             self.conn.close()
             raise
         self._migrate_formula_sao()
+        self._migrate_drop_python_decorators()
         self._seed_sql_types()
         self._seed_python_syntax()
         self._seed_structure_types()
@@ -198,6 +199,20 @@ class SqlStore:
                 self.conn.commit()
                 print("[programming] file_line_type 表重建（formula_id by id）")
 
+    def _migrate_drop_python_decorators(self):
+        """遷移（幂等）：python_decorators 表移除（2026-10-28 用戶：搬去 ast）
+
+        decorator 係語言語法單元，歸 AST 分析中心（ast module）。
+        舊表存在就 drop（資料已由 ast decorator 表 seed 重建）。
+        """
+        has = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='python_decorators'").fetchone()
+        if has:
+            self.conn.execute("DROP TABLE python_decorators")
+            self.conn.commit()
+            print("[programming] python_decorators 表搬去 ast（drop 舊表）")
+
     def _seed_formula_sao(self):
         """確保 subject / action / object 字典 + formula 組合有齊（冪等）"""
         # 1. subject
@@ -249,7 +264,7 @@ class SqlStore:
         self.conn.commit()
 
     def _seed_python_syntax(self):
-        """確保 python_ast / python_decorators 表有齊官方語法（冪等）"""
+        """確保 python_ast 表有齊官方語法（冪等）"""
         # python_ast 加 symbol 欄（migration：舊 DB 冇）
         cols = [c[1] for c in self.conn.execute("PRAGMA table_info('python_ast')")]
         if "symbol" not in cols:
@@ -269,14 +284,7 @@ class SqlStore:
                 "UPDATE python_ast SET symbol = ?"
                 " WHERE language_id = ? AND ast = ? AND symbol != ?",
                 (symbol, lang_id, ast_name, symbol))
-        # python_decorators
-        for lang_id, deco, desc in _schema.DEFAULT_PYTHON_DECORATORS:
-            self.conn.execute(
-                "INSERT INTO python_decorators (language_id, decorators, description)"
-                " SELECT ?, ?, ? WHERE NOT EXISTS"
-                " (SELECT 1 FROM python_decorators"
-                "  WHERE language_id = ? AND decorators = ?)",
-                (lang_id, deco, desc, lang_id, deco))
+        # python_decorators 已搬去 ast module（2026-10-28 用戶要求）
         self.conn.commit()
 
     def python_asts(self, active_only=True):
@@ -312,14 +320,6 @@ class SqlStore:
         r = self.find_python_ast_by_symbol(symbol)
         return r["id"] if r else None
 
-    def python_decorators_list(self, active_only=True):
-        """列出 Python decorator 字典"""
-        sql = "SELECT * FROM python_decorators"
-        if active_only:
-            sql += " WHERE is_active = 1"
-        sql += " ORDER BY id"
-        return [dict(r) for r in self.conn.execute(sql)]
-
     def _seed_python_operator(self):
         """全量 seed Python operator 模組官方函數（docs.python.org/3/library/operator.html）
 
@@ -327,7 +327,7 @@ class SqlStore:
         （python.org 嘅 operator.html 就係由 CPython 源碼 docstring 生成——
           所以 docstring 原文 = official tutorial 原文）。
         寫入：
-            python_decorators（operator 函數都係官方語法單元）
+            ast.db decorator（operator 函數都係官方語法單元；2026-10-28 搬 ast）
             source.db source_proof（word=operator.<fn> -> source=Python Language Reference
                                    proof=官方 docstring 原文）
         """
@@ -339,15 +339,23 @@ class SqlStore:
         names = getattr(_op, "__all__", None) or []
         if not names:
             return 0
-        # 2. python_decorators（language python + description）
-        for fn in names:
-            self.conn.execute(
-                "INSERT INTO python_decorators (language_id, decorators, description)"
-                " SELECT 1, ?, ? WHERE NOT EXISTS"
-                " (SELECT 1 FROM python_decorators"
-                "  WHERE language_id = 1 AND decorators = ?)",
-                (fn, f"operator: {fn}（docs.python.org/3/library/operator.html）", fn))
-        self.conn.commit()
+        # 2. ast.db decorator（2026-10-28：decorator 歸 ast module）
+        try:
+            import sqlite3 as _sq_ast
+            _ac = _sq_ast.connect(r"C:\projects\meta\ast\ast.db")
+            try:
+                for fn in names:
+                    _ac.execute(
+                        "INSERT INTO decorator (meta, description)"
+                        " SELECT ?, ? WHERE NOT EXISTS"
+                        " (SELECT 1 FROM decorator WHERE meta = ?)",
+                        (fn, f"operator: {fn}（docs.python.org/3/library/operator.html）",
+                         fn))
+                _ac.commit()
+            finally:
+                _ac.close()
+        except Exception:
+            pass
         # 3. source_proof（word=operator.<fn> -> source=Python Language Reference
         #    proof = 官方 docstring 原文）
         n = 0
@@ -537,25 +545,6 @@ class SqlStore:
         except Exception:
             pass
         return n
-
-    def find_python_decorator(self, decorator_name):
-        """搵一個 decorator（冇 -> None）"""
-        return self.conn.execute(
-            "SELECT * FROM python_decorators WHERE decorators = ?",
-            (decorator_name,)).fetchone()
-
-    def add_python_decorator(self, decorator_name, description=None,
-                             language_id=1):
-        """登記一個 decorator（冪等）"""
-        self.conn.execute(
-            "INSERT INTO python_decorators (language_id, decorators, description)"
-            " SELECT ?, ?, ? WHERE NOT EXISTS"
-            " (SELECT 1 FROM python_decorators"
-            "  WHERE language_id = ? AND decorators = ?)",
-            (language_id, decorator_name, description,
-             language_id, decorator_name))
-        self.conn.commit()
-        return self.find_python_decorator(decorator_name)
 
     # ---------- *_allowed 語境允許表（2026-10-27 用戶設計） ----------
     def add_field_allowed(self, arg_id, structure_type_id=None,

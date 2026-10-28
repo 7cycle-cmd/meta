@@ -41,6 +41,15 @@ class Ast:
         """登記一個函數類別（冪等）"""
         return self.store.add_function_class(meta, description)
 
+    # ---------- decorator 字典（2026-10-28 用戶：歸 ast） ----------
+    def list_decorators(self, active_only=True):
+        """列出 decorator 字典（AST 分析中心）"""
+        return self.store.decorators(active_only)
+
+    def register_decorator(self, meta, description=None):
+        """登記一個 decorator（冪等）"""
+        return self.store.add_decorator(meta, description)
+
     # ---------- analyze 表 ----------
     def list_analyze(self, table, active_only=True):
         """列出一個 analyze 表（analyze_root / analyze_module / analyze_skill）"""

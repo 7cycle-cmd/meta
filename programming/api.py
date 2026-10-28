@@ -153,20 +153,6 @@ class Programming:
         """登記一個 Python AST 節點（冪等）"""
         return self.store.add_python_ast(ast_name, description, language_id)
 
-    def python_decorators(self, active_only=True):
-        """列出 Python decorator 字典（官方/實務語法）"""
-        return self.store.python_decorators_list(active_only)
-
-    def find_python_decorator(self, decorator_name):
-        """搵一個 decorator（冇 -> None）"""
-        return self.store.find_python_decorator(decorator_name)
-
-    def add_python_decorator(self, decorator_name, description=None,
-                             language_id=1):
-        """登記一個 Python decorator（冪等）"""
-        return self.store.add_python_decorator(decorator_name, description,
-                                                language_id)
-
     # ---------- *_allowed 語境允許表（2026-10-27 用戶設計） ----------
     def structure_types(self, active_only=True):
         """列出語境層級字典（module/channel/skill/db_table/db_field）"""

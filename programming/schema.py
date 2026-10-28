@@ -479,40 +479,10 @@ DEFAULT_PYTHON_ASTS = [
     (1, "arg", None, "參數（def name(arg) 嘅每個參數）"),
 ]
 
-# python_decorators 表：Python decorator 字典（2026-10-27 用戶設計）
-#   language_id = programming_language.id（python=1）
-#   decorators  = decorator 名（formula_def / property / app.route ...）
-# 一行 = 一個 decorator 詞條（官方/實務語法）。
-PYTHON_DECORATORS_DDL = """
-CREATE TABLE IF NOT EXISTS python_decorators (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    language_id INTEGER NOT NULL,   -- programming_language.id（python=1）
-    decorators  TEXT    NOT NULL,   -- decorator 名（formula_def / property ...）
-    description TEXT,               -- 用途（例如 @property = 唯讀屬性）
-    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-    UNIQUE (language_id, decorators)
-);
-"""
-
-# 官方 decorator + 全站實際用過嘅 decorator 種子（template.decorator 表亦有）
-DEFAULT_PYTHON_DECORATORS = [
-    (1, "property", "內建：唯讀屬性（docs.python.org library/functions）"),
-    (1, "classmethod", "內建：類別方法（class 自身作第一參數）"),
-    (1, "staticmethod", "內建：靜態方法（冇 self/cls）"),
-    (1, "abstractmethod", "abc：抽象方法（子類必須實作）"),
-    (1, "formula_def", "template/decorators.py：公式定義掛鉤（table-driven）"),
-    (1, "dataclass", "dataclasses：自動生成 __init__ 等"),
-    (1, "functools.wraps", "functools：保留被裝飾函數 metadata"),
-    (1, "contextmanager", "contextlib：用 generator 寫 context manager"),
-    (1, "app.route", "Flask：URL 路由"),
-    (1, "pytest.fixture", "pytest：測試 fixture"),
-    (1, "lru_cache", "functools：函式結果快取"),
-    (1, "cached_property", "functools：一次性計算屬性"),
-]
-
 # python 語法字典（官方可證明，docs.python.org）
-PYTHON_SYNTAX_DDL = PYTHON_AST_DDL + PYTHON_DECORATORS_DDL
+# 2026-10-28（用戶要求）：python_decorators 表已搬去 ast module
+# （decorator 係語言語法單元，歸 AST 分析中心）——呢度淨保留 python_ast。
+PYTHON_SYNTAX_DDL = PYTHON_AST_DDL
 
 # ============ structure_type（2026-10-27 用戶設計：語境層級字典） ============
 # 每個語法節點（arg / Starred）出現喺邊種「結構層級」：
@@ -660,7 +630,6 @@ __all__ = ["PROGRAMMING_LANGUAGE_DDL", "LANGUAGE_ALIAS_DDL",
            "PROOF_LINE_FIELD_DDL", "PROOF_LINE_AST_DDL",
            "DB_FIELD_VALUE_DDL",
            "PYTHON_AST_DDL", "DEFAULT_PYTHON_ASTS",
-           "PYTHON_DECORATORS_DDL", "DEFAULT_PYTHON_DECORATORS",
            "PYTHON_SYNTAX_DDL",
            "STRUCTURE_TYPE_DDL", "DEFAULT_STRUCTURE_TYPES",
            "FIELD_ALLOWED_DDL", "STARRED_ALLOWED_DDL", "SQL_ALLOWED_DDL",

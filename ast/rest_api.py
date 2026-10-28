@@ -96,6 +96,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"functions": a.list_functions()})
             elif path == "/classes":
                 self._send(200, {"classes": a.list_function_classes()})
+            elif path == "/decorators":
+                self._send(200, {"decorators": a.list_decorators()})
+            elif path == "/add-decorator":
+                meta = (qs.get("meta") or [""])[0]
+                if not meta:
+                    self._send(400, {"error": "meta 參數必需"})
+                    return
+                desc = (qs.get("description") or [None])[0]
+                did = a.register_decorator(meta, desc)
+                self._send(200, {"decorator_id": did,
+                                 "decorators": a.list_decorators()})
             elif path == "/analyze":
                 table = (qs.get("table") or ["analyze_module"])[0]
                 if table not in ("analyze_root", "analyze_module",

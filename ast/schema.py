@@ -89,6 +89,53 @@ CREATE TABLE IF NOT EXISTS analyze_skill (
 );
 """
 
+# decorator 表：Python decorator 字典（2026-10-28 用戶：由 programming 搬嚟 ast）
+# ast = AST 分析中心 —— decorator 係語言語法單元，同 function / function_class
+# 一齊歸 ast module。
+# 每表只 1 meta（用戶規則）：meta = decorator 名（formula_def / property / app.route ...）
+DECORATOR_DDL = """
+CREATE TABLE IF NOT EXISTS decorator (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    meta        TEXT    NOT NULL UNIQUE,   -- decorator 名（formula_def / property ...）
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# 官方 decorator + 全站實際用過嘅 decorator 種子（2026-10-28 upgrade：加漏咗嘅）
+# 來源：programming.DEFAULT_PYTHON_DECORATORS 搬遷 + 補齊。
+DEFAULT_DECORATORS = [
+    ("property", "內建：唯讀屬性（docs.python.org library/functions）"),
+    ("classmethod", "內建：類別方法（class 自身作第一參數）"),
+    ("staticmethod", "內建：靜態方法（冇 self/cls）"),
+    ("abstractmethod", "abc：抽象方法（子類必須實作）"),
+    ("formula_def", "template/decorators.py：公式定義掛鉤（table-driven）"),
+    ("dataclass", "dataclasses：自動生成 __init__ 等"),
+    ("functools.wraps", "functools：保留被裝飾函數 metadata"),
+    ("contextmanager", "contextlib：用 generator 寫 context manager"),
+    ("app.route", "Flask：URL 路由"),
+    ("pytest.fixture", "pytest：測試 fixture"),
+    ("lru_cache", "functools：函式結果快取"),
+    ("cached_property", "functools：一次性計算屬性"),
+    # 2026-10-28 upgrade：加漏咗嘅（全站掃描見到常用）
+    ("singledispatch", "functools：單派發泛型函數"),
+    ("total_ordering", "functools：填補比較運算子"),
+    ("final", "typing：禁止覆寫"),
+    ("override", "typing：標記覆寫（Python 3.12+）"),
+    ("atexit.register", "atexit：程序退出時執行"),
+    ("asynccontextmanager", "contextlib：async context manager"),
+    ("suppress", "contextlib：靜默特定異常"),
+    ("partial", "functools：局部套用函數"),
+    ("wraps", "functools：保留 metadata（簡寫）"),
+    ("deprecated", "warnings：棄用標記"),
+    ("classproperty", "classmethod 變體：類別屬性"),
+    ("lru_cache.maxsize", "functools.lru_cache：指定容量"),
+]
+
+
 __all__ = ["FUNCTION_DDL", "FUNCTION_CLASS_DDL",
            "ANALYZE_ROOT_DDL", "ANALYZE_MODULE_DDL",
-           "ANALYZE_SKILL_DDL"]
+           "ANALYZE_SKILL_DDL",
+           "DECORATOR_DDL", "DEFAULT_DECORATORS"]
