@@ -15,7 +15,7 @@ value.db 存放「值資產」：
 #                 一跳直達：value → permit_id → permit.db 確認有冇權
 VALUE_DDL = """
 CREATE TABLE IF NOT EXISTS value (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,   -- 唔用 AUTOINCREMENT（2026-10-28：防跳號，新 id = MAX+1）
     value       TEXT,
     taxonomy_id INTEGER,             -- taxonomy.registry.id（邊個 module 登記）
     permit_id   INTEGER,             -- permit.db permit.id（授權）
@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS value (
 #   json         = 拆分結果快照（["split_value":"hello, seq=1"; ...]）
 SPLIT_TOTAL_DDL = """
 CREATE TABLE IF NOT EXISTS split_total (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER PRIMARY KEY,   -- 唔用 AUTOINCREMENT（2026-10-28：防跳號）
     value_id    INTEGER NOT NULL,      -- value.id（邊個值被拆）
     split_total INTEGER NOT NULL,       -- 拆成幾多份
     json        TEXT,                  -- 拆分結果快照
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS split_total (
 #   json             = 該份嘅快照
 SPLIT_VALUE_DDL = """
 CREATE TABLE IF NOT EXISTS split_value (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              INTEGER PRIMARY KEY,   -- 唔用 AUTOINCREMENT（2026-10-28：防跳號）
     value_id        INTEGER NOT NULL,      -- value.id（原值）
     split_total_id  INTEGER NOT NULL,      -- split_total.id（今次拆分）
     split_value     TEXT    NOT NULL,      -- 拆出嚟嘅值
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS split_value (
 #       -> <value> = split_value 對應嘅值（有 terminology_id = 有權工作）
 TERMINOLOGY_DDL = """
 CREATE TABLE IF NOT EXISTS terminology (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              INTEGER PRIMARY KEY,   -- 唔用 AUTOINCREMENT（2026-10-28：防跳號）
     terminology_id  INTEGER NOT NULL,      -- terminology.api id（授權標記）
     split_value_id  INTEGER NOT NULL,      -- split_value.id（邊個拆分值有權）
     permit_id       INTEGER,              -- permit.db permit.id（2026-10-28b）
