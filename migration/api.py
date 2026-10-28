@@ -50,5 +50,13 @@ class Migration:
         """
         return self.store.check_column(module_name, table, column)
 
+    def add_column(self, module_name, table, column, column_type="TEXT"):
+        """真實加欄位（ALTER TABLE ADD COLUMN；冪等）
+
+        返回 {"added": bool, "already": bool, "exists": bool, ...}
+        """
+        return self.store.add_column(module_name, table, column,
+                                     column_type)
+
     def close(self):
         self.store.close()

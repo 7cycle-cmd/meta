@@ -374,6 +374,61 @@ class SqlStore:
         return {"exists": exists, "db_file": db_file,
                 "table": table, "column": column}
 
+    def add_column(self, module_name, table, column, column_type="TEXT"):
+        """真實加欄位（ALTER TABLE ADD COLUMN；冪等，唔 hardcode）
+
+        module_name = taxonomy.registry.meta（邊個 module；決定 db 檔）
+        table       = 張表名
+        column      = 欄位名
+        column_type = SQL 型別（db_field_type.meta 權威；預設 TEXT）
+
+        流程：
+            1. 真查 target db 有冇欄位（PRAGMA）
+            2. 有 -> 唔加（idempotent，already=True）
+            3. 冇 -> ALTER TABLE ADD COLUMN（真實 SQL）
+            4. 加完 -> 真查確認
+        返回 {"added": bool, "already": bool, "exists": bool,
+              "db_file": str, "table": str, "column": str,
+              "column_type": str, "error": str}
+        """
+        import os
+        db_file = None
+        exists = False
+        added = False
+        already = False
+        err = None
+        if module_name and table and column:
+            p = os.path.join(r"C:\projects\meta", module_name,
+                             f"{module_name}.db")
+            if os.path.isfile(p):
+                db_file = p
+                import sqlite3 as _sq
+                c2 = _sq.connect(p)
+                try:
+                    cols = {r[1] for r in c2.execute(
+                        f"PRAGMA table_info('{table}')").fetchall()}
+                    exists = column in cols
+                    if exists:
+                        already = True
+                    else:
+                        # 真實 ALTER（column 名用引號，type 由權威）
+                        c2.execute(
+                            f"ALTER TABLE '{table}' ADD COLUMN"
+                            f" '{column}' {column_type}")
+                        c2.commit()
+                        # 加完真查確認
+                        cols2 = {r[1] for r in c2.execute(
+                            f"PRAGMA table_info('{table}')").fetchall()}
+                        exists = column in cols2
+                        added = exists
+                except Exception as e:
+                    err = str(e)
+                finally:
+                    c2.close()
+        return {"added": added, "already": already, "exists": exists,
+                "db_file": db_file, "table": table, "column": column,
+                "column_type": column_type, "error": err}
+
     def by_module(self):
         """按 module + type 統計（type_value 補名）"""
         rows = [dict(r) for r in self.conn.execute(

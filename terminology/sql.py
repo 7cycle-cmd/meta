@@ -3760,6 +3760,35 @@ class SqlStore:
                         _m.close()
                 except Exception:
                     answers[s["question_id"]] = 0
+            elif test == "add_column":
+                # 2026-10-29（用戶要求）：migrate_schema step 3 ——
+                # 真實加欄位（ALTER TABLE ADD COLUMN；冪等）。
+                # value = 欄位名；type 由 db_field_type 權威（TEXT 預設）；
+                # target（module/table）由 migration_log 最近記錄話事。
+                # PASS = 真加咗 / 已存在（幂等都係成功）。
+                try:
+                    from migration import Migration as _M
+                    _m = _M()
+                    try:
+                        _logs = _m.logs(limit=1)
+                        if not _logs:
+                            answers[s["question_id"]] = 0
+                        else:
+                            _ml = _logs[0]
+                            module_name = self._taxonomy_meta_of(
+                                _ml.get("taxonomy_id"))
+                            if not module_name:
+                                answers[s["question_id"]] = 0
+                            else:
+                                r = _m.add_column(
+                                    module_name,
+                                    _ml.get("structure_db_table"), v, "TEXT")
+                                answers[s["question_id"]] = \
+                                    1 if (r["added"] or r["already"]) else 0
+                    finally:
+                        _m.close()
+                except Exception:
+                    answers[s["question_id"]] = 0
             else:
                 answers[s["question_id"]] = 1 if v else 0
         return answers
