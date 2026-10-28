@@ -25,10 +25,11 @@ class SqlStore:
             raise
         self._migrate_formula_sao()
         self._migrate_drop_python_decorators()
+        self._seed_formula_sao()          # 先 seed subject/action/object（migration 要用）
+        self._migrate_language_ao()       # 再正規化 sql_type / python_ast
         self._seed_sql_types()
         self._seed_python_syntax()
         self._seed_structure_types()
-        self._seed_formula_sao()
         # 2026-10-27：全量官方語法/語句 seed（source_proof 證明）
         self._seed_python_operator()
         self._seed_sql_statements()
@@ -213,6 +214,137 @@ class SqlStore:
             self.conn.commit()
             print("[programming] python_decorators 表搬去 ast（drop 舊表）")
 
+    def _migrate_language_ao(self):
+        """遷移（幂等）：sql_type / python_ast 正規化（2026-10-28 用戶）
+
+        sql_type   舊：id | value | description（冇 language_id）
+                   -> 新：id | language_id | action_id | value | description
+        python_ast 舊：id | language_id | ast | symbol | description
+                   -> 新：id | language_id | object_id | ast | symbol | description
+        全 by id：language_id 指 programming_language；action_id 指
+        formula_action；object_id 指 formula_object。
+        """
+        # 1. sql_type 加 language_id（sql=25）+ action_id（DDL/DML -> action）
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('sql_type')")}
+        if "language_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE sql_type ADD COLUMN language_id INTEGER")
+            self.conn.commit()
+            print("[programming] sql_type + language_id 欄")
+        if "action_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE sql_type ADD COLUMN action_id INTEGER")
+            self.conn.commit()
+            print("[programming] sql_type + action_id 欄")
+        # 回填：sql language id = 25（programming_language.meta='sql'）
+        row = self.conn.execute(
+            "SELECT id FROM programming_language WHERE meta = 'sql'"
+            " LIMIT 1").fetchone()
+        sql_lang = row["id"] if row else 25
+        # action_id：DDL -> formula_action.create，DML -> formula_action.select
+        act_ddl = self.conn.execute(
+            "SELECT id FROM formula_action WHERE meta = 'create' LIMIT 1"
+        ).fetchone()
+        act_dml = self.conn.execute(
+            "SELECT id FROM formula_action WHERE meta = 'select' LIMIT 1"
+        ).fetchone()
+        ddl_a = act_ddl["id"] if act_ddl else None
+        dml_a = act_dml["id"] if act_dml else None
+        prev = None
+        for r in self.conn.execute(
+                "SELECT id, value FROM sql_type ORDER BY id"):
+            lang = sql_lang
+            act = ddl_a if r["value"] == "DDL" else dml_a
+            self.conn.execute(
+                "UPDATE sql_type SET language_id = COALESCE(language_id, ?),"
+                " action_id = COALESCE(action_id, ?) WHERE id = ?",
+                (lang, act, r["id"]))
+            prev = r["id"]
+        self.conn.execute(
+            "UPDATE sql_type SET language_id = ? WHERE language_id IS NULL",
+            (sql_lang,))
+        self.conn.commit()
+        # 2. python_ast 加 object_id（AST 節點 -> formula_object）
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('python_ast')")}
+        if "object_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE python_ast ADD COLUMN object_id INTEGER")
+            self.conn.commit()
+            print("[programming] python_ast + object_id 欄")
+        # 回填：AST 名 -> formula_object（FunctionDef -> function 等）
+        obj_map = {
+            "FunctionDef": "function",
+            "AsyncFunctionDef": "function",
+            "ClassDef": "class",
+            "Return": "statement",
+            "Assign": "statement",
+            "AugAssign": "statement",
+            "If": "statement",
+            "For": "statement",
+            "While": "statement",
+            "Call": "call",
+            "Raise": "statement",
+            "Import": "statement",
+            "ImportFrom": "statement",
+            "Compare": "expression",
+            "Subscript": "expression",
+            "Attribute": "expression",
+            "Starred": "expression",
+            "GeneratorExp": "expression",
+            "Lambda": "expression",
+            "Tuple": "collection",
+            "List": "collection",
+            "Dict": "collection",
+            "Set": "collection",
+            "BinOp": "expression",
+            "BoolOp": "expression",
+            "UnaryOp": "expression",
+            "NamedExpr": "expression",
+            "Try": "statement",
+            "With": "statement",
+            "Global": "statement",
+            "Nonlocal": "statement",
+            "Constant": "constant",
+            "Name": "name",
+            "AnnAssign": "statement",
+            "Yield": "statement",
+            "Await": "statement",
+            "Match": "statement",
+            "arg": "argument",
+        }
+        # 先確保 formula_object 有齊（statement/call/expression/name等）
+        for obj_meta in set(obj_map.values()):
+            self.conn.execute(
+                "INSERT INTO formula_object (meta, description)"
+                " SELECT ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM formula_object WHERE meta = ?)",
+                (obj_meta, f"AST 節點對象：{obj_meta}", obj_meta))
+        self.conn.commit()
+        for r in self.conn.execute(
+                "SELECT id, ast FROM python_ast WHERE object_id IS NULL"):
+            obj_meta = obj_map.get(r["ast"])
+            if not obj_meta:
+                continue
+            oid = self.conn.execute(
+                "SELECT id FROM formula_object WHERE meta = ?",
+                (obj_meta,)).fetchone()
+            if oid:
+                self.conn.execute(
+                    "UPDATE python_ast SET object_id = ? WHERE id = ?",
+                    (oid["id"], r["id"]))
+        self.conn.commit()
+        # python_ast 未有 object_id 嘅 -> 用 generic 'statement'
+        generic = self.conn.execute(
+            "SELECT id FROM formula_object WHERE meta = 'statement'"
+        ).fetchone()
+        if generic:
+            self.conn.execute(
+                "UPDATE python_ast SET object_id = ?"
+                " WHERE object_id IS NULL", (generic["id"],))
+            self.conn.commit()
+
     def _seed_formula_sao(self):
         """確保 subject / action / object 字典 + formula 組合有齊（冪等）"""
         # 1. subject
@@ -254,45 +386,98 @@ class SqlStore:
         self.conn.commit()
 
     def _seed_sql_types(self):
-        """確保 sql_type 表有齊 DDL / DML（冪等）"""
+        """確保 sql_type 表有齊 DDL / DML（冪等；language_id + action_id by id）"""
+        sql_lang = self.conn.execute(
+            "SELECT id FROM programming_language WHERE meta = 'sql'"
+            " LIMIT 1").fetchone()
+        lang = sql_lang["id"] if sql_lang else 25
+        act_ddl = self.conn.execute(
+            "SELECT id FROM formula_action WHERE meta = 'create'"
+            " LIMIT 1").fetchone()
+        act_dml = self.conn.execute(
+            "SELECT id FROM formula_action WHERE meta = 'select'"
+            " LIMIT 1").fetchone()
+        ddl_a = act_ddl["id"] if act_ddl else None
+        dml_a = act_dml["id"] if act_dml else None
         for val, desc in _schema.DEFAULT_SQL_TYPES:
+            act = ddl_a if val == "DDL" else dml_a
             self.conn.execute(
-                "INSERT INTO sql_type (value, description)"
-                " SELECT ?, ? WHERE NOT EXISTS"
+                "INSERT INTO sql_type (language_id, action_id, value, description)"
+                " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM sql_type WHERE value = ?)",
-                (val, desc, val))
+                (lang, act, val, desc, val))
+            # 校正 language/action（code 權威）
+            self.conn.execute(
+                "UPDATE sql_type SET language_id = ?, action_id = ?"
+                " WHERE value = ?", (lang, act, val))
         self.conn.commit()
 
     def _seed_python_syntax(self):
-        """確保 python_ast 表有齊官方語法（冪等）"""
-        # python_ast 加 symbol 欄（migration：舊 DB 冇）
+        """確保 python_ast 表有齊官方語法（冪等；object_id by id）"""
+        # python_ast 加 symbol / object_id 欄（migration：舊 DB 冇）
         cols = [c[1] for c in self.conn.execute("PRAGMA table_info('python_ast')")]
         if "symbol" not in cols:
             self.conn.execute(
                 "ALTER TABLE python_ast ADD COLUMN symbol TEXT")
             self.conn.commit()
             print("[programming] python_ast + symbol 欄")
-        # python_ast（4-tuple：lang_id, ast, symbol, description）
+        if "object_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE python_ast ADD COLUMN object_id INTEGER")
+            self.conn.commit()
+            print("[programming] python_ast + object_id 欄")
+        # python_ast（4-tuple：lang_id, ast, symbol, description）>
+        # object_id 由 formula_object.meta 反查（AST 節點 -> 語法對象）
+        ast_objects = {
+            "FunctionDef": "function", "AsyncFunctionDef": "function",
+            "ClassDef": "class", "Return": "statement",
+            "Assign": "statement", "AugAssign": "statement",
+            "If": "statement", "For": "statement", "While": "statement",
+            "Call": "call", "Raise": "statement",
+            "Import": "statement", "ImportFrom": "statement",
+            "Compare": "expression", "Subscript": "expression",
+            "Attribute": "expression", "Starred": "expression",
+            "GeneratorExp": "expression", "Lambda": "expression",
+            "Tuple": "collection", "List": "collection",
+            "Dict": "collection", "Set": "collection",
+            "BinOp": "expression", "BoolOp": "expression",
+            "UnaryOp": "expression", "NamedExpr": "expression",
+            "Try": "statement", "With": "statement",
+            "Global": "statement", "Nonlocal": "statement",
+            "Constant": "constant", "Name": "name",
+            "AnnAssign": "statement", "Yield": "statement",
+            "Await": "statement", "Match": "statement",
+            "arg": "argument",
+        }
         for lang_id, ast_name, symbol, desc in _schema.DEFAULT_PYTHON_ASTS:
+            obj_meta = ast_objects.get(ast_name, "statement")
+            oid = self.conn.execute(
+                "SELECT id FROM formula_object WHERE meta = ?",
+                (obj_meta,)).fetchone()
+            oid = oid["id"] if oid else None
             self.conn.execute(
-                "INSERT INTO python_ast (language_id, ast, symbol, description)"
-                " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                "INSERT INTO python_ast (language_id, object_id, ast, symbol,"
+                " description)"
+                " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM python_ast WHERE language_id = ? AND ast = ?)",
-                (lang_id, ast_name, symbol, desc, lang_id, ast_name))
-            # 校正 symbol（code 權威）
+                (lang_id, oid, ast_name, symbol, desc, lang_id, ast_name))
+            # 校正 symbol / object_id（code 權威）
             self.conn.execute(
-                "UPDATE python_ast SET symbol = ?"
-                " WHERE language_id = ? AND ast = ? AND symbol != ?",
-                (symbol, lang_id, ast_name, symbol))
+                "UPDATE python_ast SET symbol = ?, object_id = ?"
+                " WHERE language_id = ? AND ast = ?",
+                (symbol, oid, lang_id, ast_name))
         # python_decorators 已搬去 ast module（2026-10-28 用戶要求）
         self.conn.commit()
 
     def python_asts(self, active_only=True):
-        """列出 Python AST 節點字典"""
-        sql = "SELECT * FROM python_ast"
+        """列出 Python AST 節點字典（JOIN language + object meta）"""
+        sql = ("SELECT pa.*, pl.meta AS language, fo.meta AS object_meta"
+               " FROM python_ast pa"
+               " LEFT JOIN programming_language pl ON pl.id = pa.language_id"
+               " LEFT JOIN formula_object fo ON fo.id = pa.object_id")
         if active_only:
-            sql += " WHERE is_active = 1"
-        sql += " ORDER BY id"
+            sql += " WHERE pa.is_active = 1"
+        sql += " ORDER BY pa.id"
         return [dict(r) for r in self.conn.execute(sql)]
 
     def find_python_ast(self, ast_name):
@@ -301,12 +486,27 @@ class SqlStore:
             "SELECT * FROM python_ast WHERE ast = ?", (ast_name,)).fetchone()
 
     def add_python_ast(self, ast_name, description=None, language_id=1):
-        """登記一個 AST 節點（冪等）"""
+        """登記一個 AST 節點（冪等；object_id 由 meta 反查）"""
+        # object_id：AST 名對應 formula_object（預設 statement）
+        obj_map = {
+            "FunctionDef": "function", "AsyncFunctionDef": "function",
+            "ClassDef": "class", "Call": "call", "Constant": "constant",
+            "Name": "name", "arg": "argument",
+        }
+        obj_meta = obj_map.get(ast_name, "statement")
+        oid = self.conn.execute(
+            "SELECT id FROM formula_object WHERE meta = ?",
+            (obj_meta,)).fetchone()
+        oid = oid["id"] if oid else None
         self.conn.execute(
-            "INSERT INTO python_ast (language_id, ast, description)"
-            " SELECT ?, ?, ? WHERE NOT EXISTS"
+            "INSERT INTO python_ast (language_id, object_id, ast, description)"
+            " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
             " (SELECT 1 FROM python_ast WHERE language_id = ? AND ast = ?)",
-            (language_id, ast_name, description, language_id, ast_name))
+            (language_id, oid, ast_name, description, language_id, ast_name))
+        self.conn.execute(
+            "UPDATE python_ast SET object_id = COALESCE(?, object_id)"
+            " WHERE language_id = ? AND ast = ?",
+            (oid, language_id, ast_name))
         self.conn.commit()
         return self.find_python_ast(ast_name)
 
@@ -1049,11 +1249,14 @@ class SqlStore:
     # programming_language.source_id 已指 real source.db source.id；呢 4 張表
     # 將「語法單元（AST / decorator / SQL）」記錄成可證明證據。
     def sql_types(self, active_only=True):
-        """列出 SQL 語句類型（DDL / DML）"""
-        sql = "SELECT * FROM sql_type"
+        """列出 SQL 語句類型（DDL / DML；JOIN language + action meta）"""
+        sql = ("SELECT st.*, pl.meta AS language, fa.meta AS action_meta"
+               " FROM sql_type st"
+               " LEFT JOIN programming_language pl ON pl.id = st.language_id"
+               " LEFT JOIN formula_action fa ON fa.id = st.action_id")
         if active_only:
-            sql += " WHERE is_active = 1"
-        sql += " ORDER BY id"
+            sql += " WHERE st.is_active = 1"
+        sql += " ORDER BY st.id"
         return [dict(r) for r in self.conn.execute(sql)]
 
     def add_evidence_ast(self, source_id, language_id, value, ast_id=None):

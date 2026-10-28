@@ -399,26 +399,37 @@ CREATE TABLE IF NOT EXISTS db_field_value (
 # 對應一個官方來源（source_id -> source.db source.id），
 # 呢度記錄「該語法單元喺官方來源可證明」嘅證據。
 #
-# sql_type 表：SQL 語句類型字典（DDL / DML）
+# sql_type 表：SQL 語句類型字典（DDL / DML）—— 2026-10-28 用戶 redesign
+# 正規化：id | language_id | action_id | value（meta 展示）
+#   language_id = programming_language.id（sql=25）
+#   action_id   = formula_action.id（DDL/DML 係動作分類；create/alter = DDL，
+#                 select/insert/update/delete = DML）
+#   value       = 展示名（DDL / DML，保留做 meta）
 SQL_TYPE_DDL = """
 CREATE TABLE IF NOT EXISTS sql_type (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    value       TEXT    NOT NULL UNIQUE,   -- DDL / DML
+    language_id INTEGER NOT NULL,          -- programming_language.id（sql=25）
+    action_id   INTEGER NOT NULL,          -- formula_action.id（DDL/DML 動作分類）
+    value       TEXT    NOT NULL UNIQUE,   -- 展示名（DDL / DML）
     description TEXT,
     is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 """
 
-# sql_type 預設種子（2026-10-27 用戶指定）
+# sql_type 預設種子（2026-10-27 用戶指定；2026-10-28 加 language_id + action_id）
+# （language_id=25 sql；action_id 由 formula_action.meta 反查：DDL/DML 係動作）
 DEFAULT_SQL_TYPES = [
     ("DDL", "資料定義語言（CREATE / ALTER / DROP / RENAME / TRUNCATE ...）"),
     ("DML", "資料操作語言（SELECT / INSERT / UPDATE / DELETE ...）"),
 ]
 
-# python_ast 表：Python AST 節點字典（2026-10-27 用戶設計）
+# python_ast 表：Python AST 節點字典（2026-10-27 用戶設計；2026-10-28 用戶 redesign）
+# 正規化：id | language_id | object_id | ast（meta 展示）| symbol
 #   language_id = programming_language.id（python=1）
-#   ast         = AST 節點名（FunctionDef / Starred / If / Call ...）
+#   object_id   = formula_object.id（AST 節點係「被操作嘅語法對象」
+#                 -> formula_object；FunctionDef=function_statement ...）
+#   ast         = AST 節點名（FunctionDef / Starred ...，保留做 meta 展示）
 #   symbol      = 對應符號（Starred -> "*" / Compare -> "=="...；冇 = NULL）
 # 一行 = 一個官方語法節點（docs.python.org 可證明），
 # 用嚟切 code 行 / function 做 AST pattern（同 formula_cuter 對照嘅語言層版本），
@@ -427,7 +438,8 @@ PYTHON_AST_DDL = """
 CREATE TABLE IF NOT EXISTS python_ast (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     language_id INTEGER NOT NULL,   -- programming_language.id（python=1）
-    ast         TEXT    NOT NULL,   -- AST 節點名（FunctionDef / Starred ...）
+    object_id   INTEGER NOT NULL,   -- formula_object.id（AST 節點 = 語法對象）
+    ast         TEXT    NOT NULL,   -- AST 節點名（FunctionDef / Starred ...，meta 展示）
     symbol      TEXT,               -- 對應符號（Starred -> "*" / Compare -> "=="）
     description TEXT,               -- 節點說明（例如 "*items" = Starred vararg）
     is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
