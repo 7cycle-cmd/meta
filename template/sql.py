@@ -1282,7 +1282,10 @@ class SqlStore:
         r = formula row（method + path + full = HTTP body 模板可選）
         params 代換 path / body 入面嘅 placeholder（"module_id" 等）。
         200-299 = PASS（ok=True）；其他 / 連唔到 = FAIL。
-        返回 {"ok": bool, "status": int, "url": str, "error": str}
+        每次執行都寫 evidence（template.evidence 表）——
+        返回 + 記錄，兩樣都做（proof 有 record）。
+        返回 {"ok": bool, "status": int, "url": str, "error": str,
+              "evidence_id": int}
         """
         import urllib.request as _url
         method = (r.get("method") or "GET").upper()
@@ -1305,17 +1308,73 @@ class SqlStore:
         if url.startswith("/"):
             # 相對路徑 -> localhost（meta 站台）
             url = "http://127.0.0.1:9500" + url
+        ok, status, err = False, None, None
         try:
             req = _url.Request(url, method=method)
             if body:
                 req.add_header("Content-Type", "application/json")
                 req.data = body.encode("utf-8")
             with _url.urlopen(req, timeout=10) as resp:
-                return {"ok": 200 <= resp.status < 300,
-                        "status": resp.status, "url": url, "error": None}
+                status = resp.status
+                ok = 200 <= status < 300
         except Exception as exc:
-            return {"ok": False, "status": None, "url": url,
-                    "error": str(exc)}
+            err = str(exc)
+        # 記錄 evidence（proof of proof —— HTTP 執行記錄）
+        import json as _json
+        self.conn.execute(
+            "INSERT INTO evidence"
+            " (formula_id, table_name, field_name, value,"
+            "  expected, actual, is_match, evidence)"
+            " VALUES (?, 'http', 'status', ?, 1, ?, ?, ?)",
+            (r.get("id"),
+             f"{method} {url}",
+             str(status) if status else err or "",
+             1 if ok else 0,
+             _json.dumps({"method": method, "url": url,
+                          "status": status, "error": err,
+                          "tool": "http"},
+                         ensure_ascii=False)))
+        ev_id = self.conn.execute(
+            "SELECT id FROM evidence WHERE formula_id = ?"
+            " ORDER BY id DESC LIMIT 1", (r.get("id"),)).fetchone()
+        self.conn.commit()
+        return {"ok": ok, "status": status, "url": url,
+                "error": err,
+                "evidence_id": ev_id["id"] if ev_id else None}
+
+    def record_http_proof(self, method, url, status, formula_id=None,
+                          description=None):
+        """記錄一次 HTTP 證明（postman 手動執行嘅結果，2026-10-28）
+
+        唔會自己發請求 —— 記錄實際發生咗嘅 HTTP 結果
+        （你喺 Postman 打 API 之後 submit 記錄）。
+        formula_id = 可選（連去 tool formula；冇 = 0 = 獨立記錄）
+        status     = HTTP status code（2xx = is_match 1）
+        返回 {"evidence_id", "is_match"}
+        """
+        import json as _json
+        ok = 200 <= int(status) < 300 if status is not None else False
+        self.conn.execute(
+            "INSERT INTO evidence"
+            " (formula_id, table_name, field_name, value,"
+            "  expected, actual, is_match, evidence)"
+            " VALUES (?, 'http', 'status', ?, 1, ?, ?, ?)",
+            (formula_id or 0,
+             f"{method} {url}",
+             str(status),
+             1 if ok else 0,
+             _json.dumps({"method": method, "url": url,
+                          "status": status,
+                          "recorded_by": "postman",
+                          "description": description},
+                         ensure_ascii=False)))
+        self.conn.commit()
+        ev = self.conn.execute(
+            "SELECT id FROM evidence WHERE is_active = 1"
+            " ORDER BY id DESC LIMIT 1").fetchone()
+        return {"evidence_id": ev["id"] if ev else None,
+                "is_match": 1 if ok else 0,
+                "recorded_by": "postman"}
 
     # ============ Evidence 引擎（2026-10-27 用戶要求：formula 生成證據） ============
     def gen_evidence_formulas(self, targets=None):

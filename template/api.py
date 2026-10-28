@@ -101,6 +101,12 @@ class Template:
         """列出 proof（語言型 + 工具型）"""
         return self.store.proofs(formula_id)
 
+    def record_http_proof(self, method, url, status, formula_id=None,
+                          description=None):
+        """記錄一次 HTTP 證明（postman 手動執行結果，寫 evidence）"""
+        return self.store.record_http_proof(method, url, status,
+                                            formula_id, description)
+
     # ---------- Evidence（2026-10-27：formula 生成證據，唔 replace SSOT） ----------
     def gen_evidence_formulas(self, targets=None):
         """由 SSOT 自動生成 evidence formulas 並執行（寫 evidence 表）

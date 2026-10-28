@@ -172,6 +172,28 @@ class ApiHandler(BaseHTTPRequestHandler):
                           if x.strip()] if targets else []
                     res = t.gen_evidence_formulas(tl)
                     self._send(200, res)
+                # ---------- HTTP proof（2026-10-28 用戶：postman 執行記錄）----------
+                elif path == "/http-proof":
+                    # 記錄一次 HTTP 證明（postman 打 API 嘅結果）
+                    # ?method=&url=&status=&formula_id=&description=
+                    # 成功（2xx）= is_match 1；其他 = 0
+                    method = qs.get("method")
+                    url = qs.get("url")
+                    status = qs.get("status")
+                    formula_id = qs.get("formula_id")
+                    if not method or not url or status is None:
+                        self._send(400, {"error": "需要 ?method=&url=&status="})
+                        return
+                    try:
+                        st = int(status)
+                    except ValueError:
+                        self._send(400, {"error": f"status 唔係數字: {status}"})
+                        return
+                    res = t.record_http_proof(
+                        method.upper(), url, st,
+                        formula_id=int(formula_id) if formula_id else None,
+                        description=qs.get("description"))
+                    self._send(200, res)
                 # ---------- formula_comment（2026-10-28 用戶設計）----------
                 elif path == "/formula-comments":
                     # 列出 formula 註解（可 ?formula_id= 篩選）
