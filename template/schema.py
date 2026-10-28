@@ -347,6 +347,22 @@ CREATE TABLE IF NOT EXISTS evidence (
 
 EVIDENCE_DDL_ALL = EVIDENCE_DDL
 
+# formula_comment 表：formula 嘅註解（2026-10-28 用戶設計）
+# 目的：code 入面嘅 comment 唔再留喺 file（減少 hardcode/噪音），
+#       搬入表 —— formula_comment 記錄「呢條 formula 想做咩」。
+#   formula_id = template.formula.id
+#   comment    = 註解文字（由 AST 掃描時抽出嘅 docstring / # comment）
+FORMULA_COMMENT_DDL = """
+CREATE TABLE IF NOT EXISTS formula_comment (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    formula_id  INTEGER NOT NULL,          -- formula.id
+    comment     TEXT    NOT NULL,          -- 註解文字
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (formula_id, comment)
+);
+"""
+
 __all__ = ["VALUE_DDL", "W5H2_DDL", "ANSWER_DDL", "OPERATOR_DDL",
            "CALCULATION_DDL", "EXPECTED_DDL", "CONDITION_DDL",
            "TEST_DDL", "SEQ_DDL", "STATUS_DDL",
@@ -355,4 +371,5 @@ __all__ = ["VALUE_DDL", "W5H2_DDL", "ANSWER_DDL", "OPERATOR_DDL",
            "FORMULA_DDL", "FORMULA_CUTER_DDL", "PROOF_DDL",
            "PREFLIGHT_TABLE_DDL", "PREFLIGHT_CONDITION_DDL",
            "PROOF_DDL_ALL", "DECORATOR_DDL", "DEFAULT_DECORATORS",
-           "EVIDENCE_DDL", "EVIDENCE_DDL_ALL"]
+           "EVIDENCE_DDL", "EVIDENCE_DDL_ALL",
+           "FORMULA_COMMENT_DDL"]

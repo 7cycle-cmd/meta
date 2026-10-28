@@ -116,6 +116,17 @@ class _Handler(BaseHTTPRequestHandler):
                 files = s.list_structure_files(
                     int(mid) if mid else None)
                 self._send(200, {"structure_files": files})
+            elif path == "/structure-functions":
+                # function 地址層（2026-10-28 用戶設計）
+                mid = qs.get("module_id")
+                funcs = s.list_structure_functions(
+                    int(mid) if mid else None)
+                self._send(200, {"structure_functions": funcs})
+            elif path == "/sync-structure-functions":
+                # AST 掃描 function 地址（?module= 可選）
+                mod = qs.get("module")
+                res = s.sync_structure_functions(mod)
+                self._send(200, res)
             elif path == "/table-definitions":
                 self._send(200,
                            {"table_definitions":

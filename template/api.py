@@ -61,6 +61,15 @@ class Template:
         """攞一條 formula 連 cuter / proof / tables / conditions"""
         return self.store.formula(formula_id)
 
+    # ---------- formula_comment（2026-10-28 用戶設計）----------
+    def set_formula_comment(self, formula_id, comment):
+        """設定一條 formula 嘅註解（冪等）"""
+        return self.store.set_formula_comment(formula_id, comment)
+
+    def formula_comments(self, formula_id=None):
+        """列出 formula_comment（可按 formula 篩選）"""
+        return self.store.formula_comments(formula_id)
+
     def cut_formula(self, formula_id):
         """將 formula.full 切粒入 formula_cuter"""
         return self.store._cut_formula(formula_id)

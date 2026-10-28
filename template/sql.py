@@ -44,13 +44,44 @@ class SqlStore:
         self._seed()
 
     def ensure_tables(self):
-        """確保表存在（自己 schema：12 張 + 5 張 Proof 系統表 + decorator + evidence）"""
+        """確保表存在（自己 schema：12 張 + 5 張 Proof 系統表 + decorator + evidence + formula_comment）"""
         self.conn.executescript(TEMPLATE_DDL + PROOF_DDL_ALL
-                                + DECORATOR_DDL + EVIDENCE_DDL_ALL)
+                                + DECORATOR_DDL + EVIDENCE_DDL_ALL
+                                + FORMULA_COMMENT_DDL)
         self.conn.commit()
         self._migrate_formula_cuter_seq()
         self._migrate_names()
         self._seed_decorators()
+
+    # ---------- formula_comment（2026-10-28 用戶設計）----------
+    # 目的：code 入面嘅 comment 唔再留喺 file，搬入表 ——
+    #       formula_comment 記錄「呢條 formula 想做咩」。
+
+    def set_formula_comment(self, formula_id, comment):
+        """設定一條 formula 嘅註解（冪等：UNIQUE(formula_id, comment)）"""
+        self.conn.execute(
+            "INSERT INTO formula_comment (formula_id, comment)"
+            " SELECT ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM formula_comment WHERE formula_id = ?"
+            "  AND comment = ?)",
+            (formula_id, comment, formula_id, comment))
+        self.conn.commit()
+        r = self.conn.execute(
+            "SELECT id FROM formula_comment WHERE formula_id = ?"
+            " AND comment = ?", (formula_id, comment)).fetchone()
+        return r["id"] if r else None
+
+    def formula_comments(self, formula_id=None):
+        """列出 formula_comment（可按 formula 篩選）"""
+        sql = ("SELECT fc.*, f.full AS formula_full"
+               " FROM formula_comment fc"
+               " LEFT JOIN formula f ON f.id = fc.formula_id")
+        args = ()
+        if formula_id is not None:
+            sql += " WHERE fc.formula_id = ?"
+            args = (formula_id,)
+        sql += " ORDER BY fc.id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
 
     def _migrate_names(self):
         """遷移（幂等）：test -> condition；calculation -> operator（2026-10-27 用戶要求）

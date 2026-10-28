@@ -119,6 +119,14 @@ class Structure:
         """列出實體檔案（可按 module 篩選）"""
         return self.store.structure_files(module_id, active_only)
 
+    def list_structure_functions(self, module_id=None, active_only=True):
+        """列出 structure_function（可按 module 篩選，2026-10-28）"""
+        return self.store.structure_functions(module_id, active_only)
+
+    def sync_structure_functions(self, module_name=None):
+        """AST 掃描 function 地址入 structure_function（2026-10-28）"""
+        return self.store.sync_structure_functions(module_name)
+
     def register_structure_file(self, module_id, file_name, file_type_id=None):
         """登記一個實體檔案（冪等）—— file 層行（structure_module）
 

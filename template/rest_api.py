@@ -172,6 +172,22 @@ class ApiHandler(BaseHTTPRequestHandler):
                           if x.strip()] if targets else []
                     res = t.gen_evidence_formulas(tl)
                     self._send(200, res)
+                # ---------- formula_comment（2026-10-28 用戶設計）----------
+                elif path == "/formula-comments":
+                    # 列出 formula 註解（可 ?formula_id= 篩選）
+                    fid = qs.get("formula_id")
+                    self._send(200, {"rows": t.formula_comments(
+                        int(fid) if fid else None)})
+                elif path == "/set-formula-comment":
+                    # 設定 formula 註解（?formula_id=&comment=）
+                    fid = qs.get("formula_id")
+                    comment = qs.get("comment")
+                    if not fid or not comment:
+                        self._send(400, {"error": "需要 ?formula_id=&comment="})
+                    else:
+                        cid = t.set_formula_comment(int(fid), comment)
+                        self._send(200, {"formula_comment_id": cid,
+                                         "rows": t.formula_comments(int(fid))})
                 else:
                     self._send(404, {"error": f"唔知 route: {path}"})
             finally:

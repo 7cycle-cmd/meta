@@ -82,8 +82,34 @@ CREATE TABLE IF NOT EXISTS structure_skill (
 );
 """
 
+# structure_function 表：function 層地址（2026-10-28 用戶設計）
+# 同 structure_skill 對稱：一行 = 一個 function 喺邊個 file 邊行。
+#   structure_type_id   = structure_type.id（file=2）
+#   structure_module_id = structure_module.id（父，file 層主行）
+#   function_id         = ast.db function.id（function 身份，2026-10-28）
+#   value               = function 名
+#   line_number          = 實際行號（AST node.lineno，由 ast 掃描真實攞）
+#   location             = 物理位置（root + folder + file + func:+line）
+# 用途：scanner 整合 — taxonomy_id + skill_id + function_id
+#       -> structure_type + value : line_number 定位 hardcode/formula 出處。
+STRUCTURE_FUNCTION_DDL = """
+CREATE TABLE IF NOT EXISTS structure_function (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    structure_type_id   INTEGER NOT NULL,   -- structure_type.id（file=2）
+    structure_module_id INTEGER NOT NULL,   -- structure_module.id（父，file 主行）
+    function_id         INTEGER NOT NULL,   -- ast.db function.id（function 身份）
+    value               TEXT    NOT NULL,   -- function 名
+    line_number         INTEGER,            -- 定義行號（AST node.lineno）
+    location            TEXT,               -- 物理位置（root + folder + file + func）
+    is_active           BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (structure_type_id, structure_module_id, function_id)
+);
+"""
+
 STRUCTURE_ADDRESS_DDL = (STRUCTURE_ROOT_DDL + STRUCTURE_MODULE_DDL
-                         + STRUCTURE_SKILL_DDL)
+                         + STRUCTURE_SKILL_DDL + STRUCTURE_FUNCTION_DDL)
 
 # structure_file 表已移除（2026-10-26）—— file 層直接用真檔名：
 #   structure_module (structure_type_id=file) 一行一個實體 .py 檔，
@@ -2462,6 +2488,124 @@ class SqlStore:
                 (tid, sid, tid, sid))
         self.conn.commit()
 
+    def sync_structure_functions(self, module_name=None):
+        """AST 掃描 function 地址（2026-10-28 用戶設計）
+
+        structure_function 表（同 structure_skill 對稱）：
+            一行 = 一個 function 喺邊個 file 邊行。
+        scanner 整合：taxonomy_id + skill_id + function_id
+            -> structure_type + value : line_number 定位 hardcode/formula 出處。
+
+        流程：
+            1. 掃 <META>/<module_name>/*.py（有 __init__.py 先算 module）
+            2. AST walk 搵 FunctionDef（標準庫 ast，唔係 cwd ast shadow）
+            3. function_id = ast.db function.id（去 ast module 攞/建）
+            4. structure_module_id = file 層（type=file, module_id）
+            5. INSERT structure_function（冪等）
+
+        返回 {"module": n, "functions": n, "files": n}
+        """
+        import importlib.util as _ilu
+        _ast_sp = _ilu.spec_from_file_location(
+            "_stdlib_ast",
+            os.path.join(os.path.dirname(os.__file__), "ast.py"))
+        _ast_m = _ilu.module_from_spec(_ast_sp)
+        _ast_sp.loader.exec_module(_ast_m)
+        _ast = _ast_m
+        meta_root = r"C:\projects\meta"
+        # module 清單（權威 = taxonomy.registry tree=module）
+        mods = []
+        try:
+            import sqlite3 as _sq
+            tc = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            tc.row_factory = _sq.Row
+            try:
+                for r in tc.execute(
+                        "SELECT id, meta FROM registry"
+                        " WHERE tree_id=2 AND is_active=1 ORDER BY meta"):
+                    mods.append((r["id"], r["meta"]))
+            finally:
+                tc.close()
+        except Exception:
+            return {"modules": 0, "functions": 0, "files": 0, "error": "taxonomy 讀唔到"}
+        if module_name:
+            mods = [(mid, n) for mid, n in mods if n == module_name]
+        n_func = n_file = 0
+        for module_id, folder_name in mods:
+            folder = os.path.join(meta_root, folder_name)
+            if not os.path.isdir(folder):
+                continue
+            if not os.path.isfile(os.path.join(folder, "__init__.py")):
+                continue
+            py_files = sorted(f for f in os.listdir(folder)
+                              if f.endswith(".py") and not f.startswith("_"))
+            # file 層 id（structure_module type=file, module_id）
+            file_rows = {r["value"]: r["id"] for r in self.conn.execute(
+                "SELECT sm.id, sm.value FROM structure_module sm"
+                " JOIN structure_type st ON st.id = sm.structure_type_id"
+                " WHERE st.meta='file' AND sm.module_id = ?",
+                (module_id,))}
+            for fn in py_files:
+                path = os.path.join(folder, fn)
+                file_id = file_rows.get(fn)
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        tree = _ast.parse(f.read(), filename=path)
+                except (SyntaxError, UnicodeDecodeError, OSError):
+                    continue
+                n_file += 1
+                for node in _ast.walk(tree):
+                    if not isinstance(node, (_ast.FunctionDef,
+                                            _ast.AsyncFunctionDef)):
+                        continue
+                    if node.name.startswith("_"):
+                        continue
+                    fn_id = self._ast_function_id(folder_name, fn,
+                                                  node.name)
+                    line = getattr(node, "lineno", None)
+                    if file_id and fn_id:
+                        self.conn.execute(
+                            "INSERT INTO structure_function"
+                            " (structure_type_id, structure_module_id,"
+                            "  function_id, value, line_number, location)"
+                            " SELECT 2, ?, ?, ?, ?, ? WHERE NOT EXISTS"
+                            " (SELECT 1 FROM structure_function"
+                            "  WHERE structure_type_id=2"
+                            "   AND structure_module_id = ?"
+                            "   AND function_id = ?)",
+                            (file_id, fn_id, node.name, line,
+                             f"{folder_name}\\{fn}:{line}",
+                             file_id, fn_id))
+                        n_func += 1
+        self.conn.commit()
+        return {"modules": len(mods), "functions": n_func, "files": n_file}
+
+    def _ast_function_id(self, module_name, file_name, func_name):
+        """ast.db function.id（冇就建，冪等）"""
+        try:
+            import sqlite3 as _sq
+            _c = _sq.connect(r"C:\projects\meta\ast\ast.db")
+            try:
+                _c.row_factory = _sq.Row
+                r = _c.execute(
+                    "SELECT id FROM function WHERE function = ?", (func_name,)
+                ).fetchone()
+                if r:
+                    return r["id"]
+                cur = _c.execute(
+                    "INSERT INTO function (function) SELECT ? WHERE NOT EXISTS"
+                    " (SELECT 1 FROM function WHERE function = ?)",
+                    (func_name, func_name))
+                _c.commit()
+                r2 = _c.execute(
+                    "SELECT id FROM function WHERE function = ?",
+                    (func_name,)).fetchone()
+                return r2["id"] if r2 else (cur.lastrowid if cur.rowcount else None)
+            finally:
+                _c.close()
+        except Exception:
+            return None
+
     def _sync_positions(self):
         """確保 position 字典喺 common.db（本來喺 structure.db，已搬遷）
 
@@ -3816,6 +3960,23 @@ class SqlStore:
             sql += " AND sm.module_id = ?"
             args.append(module_id)
         sql += " ORDER BY sm.module_id, sm.value"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def structure_functions(self, module_id=None, active_only=True):
+        """列出 structure_function（function 地址層，可按 module 篩選）"""
+        sql = ("SELECT sf.id, sf.structure_module_id, sf.function_id,"
+               " sf.value AS function_name, sf.line_number, sf.location,"
+               " sm.module_id, sm.value AS file_name, sm.location AS file_path"
+               " FROM structure_function sf"
+               " JOIN structure_module sm ON sm.id = sf.structure_module_id"
+               " WHERE sf.structure_type_id = 2")
+        args = []
+        if active_only:
+            sql += " AND sf.is_active = 1"
+        if module_id:
+            sql += " AND sm.module_id = ?"
+            args.append(module_id)
+        sql += " ORDER BY sm.module_id, sm.value, sf.line_number"
         return [dict(r) for r in self.conn.execute(sql, args)]
 
     def insert_structure_file(self, module_id, file_name, file_type_id=None):
