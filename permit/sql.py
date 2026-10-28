@@ -64,6 +64,130 @@ class SqlStore:
                 "ALTER TABLE import_request ADD COLUMN schema_id INTEGER")
             self.conn.commit()
             print("[permit] import_request + schema_id 欄")
+        # 2026-10-28（用戶：by id 逐個申請，ALL 唔准）：
+        # 移除舊 ALL permit / ALL request（違反 by-id 原則，留低 = 逃生門）
+        self._migrate_drop_legacy_all()
+        # import_permit 加 schema_id 欄（舊版冇 -> rebuild，保留有證明鏈嘅行）
+        self._migrate_import_permit_schema_id()
+        # schema_registry seed：由 schema.db（SSOT）真實抄 26 個 symbol
+        # （permit.db 唔再係空表 —— 註冊表 = 真 schema，唔係假資料）
+        self._seed_schema_registry()
+
+    def _migrate_import_permit_schema_id(self):
+        """遷移（幂等）：import_permit 加 schema_id 欄（by-id 完整化）
+
+        舊版（commit 4f36994）冇 schema_id —— symbols='ALL' 都入到表。
+        新版：UNIQUE(module_id, imported, schema_id)，一定要指向真 symbol。
+        重建守則（驗證紀律）：只重建「有 ALL permit 或 schema_id 缺」嘅表；
+        重建前 backup rows；有證明鏈嘅行轉成「指向 schema_registry 對應 symbol」；
+        冇得對應嘅行（假 symbol）唔搬（唔可以整假資料）。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('import_permit')")}
+        if "schema_id" in cols:
+            return  # 已新版
+        rows = [dict(r) for r in self.conn.execute(
+            "SELECT * FROM import_permit ORDER BY id")]
+        self.conn.execute("DROP TABLE import_permit")
+        self.conn.execute(IMPORT_PERMIT_DDL)
+        # 逐行搬：symbols != 'ALL' 且有真實 schema_registry 對應 -> 搬
+        # （schema_id 由 schema_registry 反查；module_id 對應返）
+        n = 0
+        for r in rows:
+            if r.get("symbols") == "ALL" or r.get("symbols") in (None, ""):
+                continue  # ALL / 冇 symbol = 違反 by-id，唔搬
+            # 反查 schema_registry（module_id + symbol）
+            sr = self.conn.execute(
+                "SELECT id FROM schema_registry"
+                " WHERE module_id IS ? AND symbol = ? AND is_active = 1"
+                " ORDER BY id LIMIT 1",
+                (r.get("module_id"), r.get("symbols"))).fetchone()
+            if not sr:
+                print(f"[permit] 唔搬 import_permit id={r['id']}"
+                      f"（symbol {r.get('symbols')!r} 冇 schema_registry 對應）")
+                continue
+            self.conn.execute(
+                "INSERT INTO import_permit"
+                " (module_id, imported, schema_id, symbols, description,"
+                "  granted_by, condition_id, flow_id, step_id, question_id,"
+                "  expected_source_id, is_active)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (r.get("module_id"), r.get("imported"), sr["id"],
+                 r.get("symbols"), r.get("description"), r.get("granted_by"),
+                 r.get("condition_id"), r.get("flow_id"), r.get("step_id"),
+                 r.get("question_id"), r.get("expected_source_id"),
+                 r.get("is_active", 1)))
+            n += 1
+        self.conn.commit()
+        print(f"[permit] import_permit rebuild：搬 {n} 行（加 schema_id by id）")
+
+    def _migrate_drop_legacy_all(self):
+        """遷移（幂等）：移除舊 ALL permit / ALL request（2026-10-28）
+
+        用戶規則：ALL 唔准，一定要 by id 逐個。
+        舊版（commit 4f36994）允許 symbols='ALL' -> 而家係逃生門，
+        見到就 delete（申請走 by-id 流程重新逐個申請）。
+        """
+        cur = self.conn.execute(
+            "DELETE FROM import_permit WHERE symbols = 'ALL'")
+        cur2 = self.conn.execute(
+            "DELETE FROM import_request WHERE symbols = 'ALL'")
+        if cur.rowcount or cur2.rowcount:
+            self.conn.commit()
+            print(f"[permit] 移除舊 ALL permit({cur.rowcount})"
+                  f" + ALL request({cur2.rowcount}) —— 改 by id 逐個")
+
+    def _seed_schema_registry(self):
+        """seed permit.db schema_registry：由 schema.db（SSOT）抄真 symbol
+
+        schema.db schema_registry 係唯一權威（26 個 DDL symbol 已登記）。
+        permit.db 嘅 schema_registry = 同一批 symbol（module_id 由
+        taxonomy 反查，symbol 照抄）。零 hardcode：逐行由真表 INSERT。
+
+        跳過：schema.db 冇嘅 symbol（permit.db 唔可以有假 symbol）。
+        """
+        try:
+            import sqlite3 as _sq
+            sc = _sq.connect(r"C:\projects\meta\schema\schema.db")
+            try:
+                sc.row_factory = _sq.Row
+                rows = list(sc.execute(
+                    "SELECT meta, source FROM schema_registry"
+                    " WHERE is_active = 1 ORDER BY id"))
+            finally:
+                sc.close()
+        except Exception:
+            return  # schema.db 未 ready（首次初始化）
+        mid = self._module_id("terminology")
+        if not mid:
+            return
+        n = 0
+        for r in rows:
+            cur = self.conn.execute(
+                "INSERT INTO schema_registry (module_id, symbol, table_names)"
+                " SELECT ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM schema_registry"
+                "  WHERE module_id = ? AND symbol = ?)",
+                (mid, r["meta"], r["source"], mid, r["meta"]))
+            n += cur.rowcount
+        if n:
+            self.conn.commit()
+            print(f"[permit] schema_registry seed：{n} 個 symbol（schema.db SSOT）")
+
+    def schema_symbols(self, module_name=None, active_only=True):
+        """列出 schema_registry（可按 module 篩選）"""
+        sql = "SELECT * FROM schema_registry WHERE 1=1"
+        args = []
+        if module_name:
+            mid = self._module_id(module_name)
+            if not mid:
+                return []
+            sql += " AND module_id = ?"
+            args.append(mid)
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
 
     def register_schema_symbols(self, module_name, symbols):
         """註冊一個 module 嘅 schema symbols（schema_registry，by id）
@@ -196,18 +320,22 @@ class SqlStore:
         ).fetchone()
         if not r:
             return {"error": "申請唔存在"}
+        if r["schema_id"] is None:
+            return {"error": "申請冇 schema_id（by id 原則 —— 唔可以批 ALL 式申請）"}
         # 寫入正式 permit（埋證明鏈 + schema_id by id）
         self.conn.execute(
             "INSERT INTO import_permit"
-            " (module_id, imported, symbols, description, granted_by,"
+            " (module_id, imported, schema_id, symbols, description,"
+            "  granted_by,"
             "  condition_id, flow_id, step_id, question_id, expected_source_id)"
-            " SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
+            " SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
             " (SELECT 1 FROM import_permit"
-            "  WHERE module_id IS ? AND imported = ? AND symbols = ?)",
-            (r["module_id"], r["imported"], r["symbols"], r["reason"],
-             decided_by, condition_id, flow_id, step_id, question_id,
+            "  WHERE module_id IS ? AND imported = ? AND schema_id = ?)",
+            (r["module_id"], r["imported"], r["schema_id"], r["symbols"],
+             r["reason"], decided_by,
+             condition_id, flow_id, step_id, question_id,
              expected_source_id,
-             r["module_id"], r["imported"], r["symbols"]))
+             r["module_id"], r["imported"], r["schema_id"]))
         self.conn.execute(
             "UPDATE import_request SET status_id = 2, decided_by = ?,"
             " updated_at = datetime('now','localtime') WHERE id = ?",
@@ -313,14 +441,19 @@ class SqlStore:
         # 兩種形式都准：
         #   - symbols 精準 match
         #   - permit symbols = 'ALL'（module 自己 schema 全部 symbol 准）
+        # 2026-10-28（用戶：ALL 唔准）：唔再認 symbols='ALL' 做萬能 permit。
+        # 每個 symbol 都要 1 by 1 申請 + 批准（import_permit 冇 ALL 記錄）。
+        # 允許 forms：
+        #   - 精準 match（imported + symbols + schema_id 指住真 symbol）
         row = self.conn.execute(
             "SELECT id FROM import_permit"
             " WHERE imported = ? AND is_active = 1"
-            "   AND ((symbols = ?) OR (symbols = 'ALL'))"
+            "   AND symbols = ?"
             "   AND (module_id IS NULL OR module_id = ?) LIMIT 1",
             (imported, symbols, module_id)).fetchone()
         if row:
-            return {"allowed": True, "reason": f"import_permit({imported} {symbols})"}
+            return {"allowed": True,
+                    "reason": f"import_permit({imported} {symbols})"}
         # wildcard 冇 permit -> 擋
         if symbols == "*":
             return {"allowed": False,

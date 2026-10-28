@@ -164,7 +164,8 @@ CREATE TABLE IF NOT EXISTS import_permit (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     module_id          INTEGER,             -- taxonomy.registry.id（NULL = 任何 module）
     imported           TEXT    NOT NULL,    -- 被 import 嘅嘢
-    symbols            TEXT    NOT NULL DEFAULT '*',  -- 准 import 嘅 symbols
+    schema_id          INTEGER,             -- schema_registry.id（by id！唔准 ALL）
+    symbols            TEXT    NOT NULL DEFAULT '*',  -- 准 import 嘅 symbols（單個 symbol 名）
     description        TEXT,
     granted_by         TEXT,                -- 邊個批（'tool' / 'monitor' / admin module）
     condition_id       INTEGER,             -- terminology.condition.id（判斷條件）
@@ -174,7 +175,7 @@ CREATE TABLE IF NOT EXISTS import_permit (
     expected_source_id INTEGER,             -- terminology.expected_source.id（解釋點解可以批）
     is_active          BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-    UNIQUE (module_id, imported, symbols)
+    UNIQUE (module_id, imported, schema_id)
 );
 """
 

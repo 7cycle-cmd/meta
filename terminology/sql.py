@@ -148,34 +148,57 @@ class SqlStore:
         # module 只知道「佢冇 permit」（have not）；
         # 有冇得批係用戶 / tool / monitor 嘅決定（give to user）。
         # 冇 permit = 擋住啟動 + 呈報用戶，等批先可以行。
-        _ok = False
+        #
+        # 2026-10-28（用戶：ALL 唔准）：唔再申請 `.schema ALL`。
+        # 改為對 schema_registry 26 個真 symbol 逐個 check（by id），
+        # 冇 permit 嘅一個一個申請（每個 request 帶 schema_id + reason）。
+        # 全批先可以啟動；有 pending 一樣擋（等 tool / monitor 決定）。
+        _ok = True
+        _pending = []
+        _granted = 0
         try:
             from permit import Permit as _P
             _pp = _P()
             try:
-                chk = _pp.check_import_permit("terminology", ".schema", "ALL")
-                if chk["allowed"]:
-                    _ok = True
-                else:
-                    # 冇 permit：申請（記錄需要）+ 擋住（唔照行）
+                # 逐個 symbol check（by id，唔准 ALL）
+                for sr in _pp.schema_symbols(module_name="terminology"):
+                    sid = sr["id"]
+                    chk = _pp.check_import_permit(
+                        "terminology", ".schema", sr["symbol"])
+                    if chk["allowed"]:
+                        _granted += 1
+                        continue
+                    # 冇 permit：逐個申請（每個都要 reason + schema_id）
                     req = _pp.request_import(
-                        "terminology", ".schema", "ALL",
-                        reason="terminology 啟動需要自己 schema")
-                    print(
-                        f"[permit] terminology 冇 .schema import permit ——"
-                        f" 已申請（request_id={req.get('request_id')}），"
-                        f" 未有批准之前唔會啟動。"
-                        f" 請用 permit.approve_import({req.get('request_id')})"
-                        f" 批准後再啟動")
+                        "terminology", ".schema", schema_id=sid,
+                        symbol=sr["symbol"],
+                        reason=f"terminology 啟動需要 schema symbol"
+                               f" {sr['symbol']}（建表 DDL）")
+                    _pending.append(
+                        (sr["symbol"], req.get("request_id"),
+                         req.get("status")))
             finally:
                 _pp.close()
         except Exception:
             pass
+        if _pending:
+            _ok = False
+            print(f"[permit] terminology 有 {len(_pending)} 個 symbol"
+                  f" 冇 permit（{_granted} 個已有）：")
+            for sym, rid, st in _pending:
+                print(f"    {sym}: request_id={rid} status={st}")
+            print("[permit] 未有批准之前唔會啟動 ——"
+                  " 請用 permit.approve_import(request_id,"
+                  " 證明鏈...) 逐個批准後再啟動")
+        elif not _granted:
+            _ok = False
+            print("[permit] terminology 冇任何 .schema permit，"
+                  "且 schema_registry 未有 symbol 註冊 —— 唔可以啟動？")
         if not _ok:
             raise PermissionError(
-                "[permit] terminology 冇 .schema import permit ——"
-                " 唔可以啟動。請 approve 申請（give to user / tool / monitor"
-                " 決定）之後再試")
+                "[permit] terminology 有未批准嘅 .schema import 申請"
+                "（by id）—— 唔可以啟動。請 approve（give to user / tool"
+                " / monitor 決定）之後再試")
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         # 2026-10-27（用戶要求）：value 表升做獨立 module（value.db）
@@ -197,6 +220,144 @@ class SqlStore:
             WORD_CATEGORY_DDL, SOURCE_REGISTER_DDL,
         ]))
         self.conn.commit()
+        # 2026-10-28（用戶設計：4 張 by-id 表接實體位置）——
+        # 真實登記「terminology 用咗邊啲 schema」（由已批 import_permit 逐個
+        # 寫入 resource_schema + structure_schema，AST 掃真實行號）。
+        self._register_resource_schemas()
+
+    # ---------- resource_schema / structure_schema 真實登記（2026-10-28）----------
+    # terminology 啟動建表 = 真係用咗呢 26 個 schema symbol（有 import permit）。
+    # 由 permit.db import_permit（by id 已批）逐個登記：
+    #   resource_schema  = (taxonomy_tree_id=4 module tree, schema_registry_id)
+    #   structure_schema = (resource_schema_id, package_id, file_id,
+    #                        line_number=AST 掃真實行號)
+    # 零 hardcode：symbol -> 行號由 AST 掃 schema.py；schema_registry_id 由
+    # permit.db import_permit 真表攞。冪等（全部 WHERE NOT EXISTS）。
+
+    def _register_resource_schemas(self):
+        """登記已用 schema 到 resource_schema + structure_schema（冪等）"""
+        try:
+            from permit import Permit as _P
+            _pp = _P()
+            try:
+                permits = _pp.import_permits()
+            finally:
+                _pp.close()
+        except Exception:
+            return
+        # 只揀自己 module（module_id = taxonomy.registry.id 4）+ .schema
+        # （module_id NULL = 全局 permit，一樣係「用咗」）
+        import sqlite3 as _sq
+        mid = None
+        try:
+            _t = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            try:
+                _t.row_factory = _sq.Row
+                r = _t.execute(
+                    "SELECT id FROM registry WHERE tree_id = 2"
+                    " AND meta = 'terminology' AND is_active = 1"
+                ).fetchone()
+                mid = r["id"] if r else None
+            finally:
+                _t.close()
+        except Exception:
+            pass
+        if not mid:
+            return
+        # 物理位置：AST 掃 schema.py 攞每個 DDL 嘅真實行號
+        lines = self._schema_symbol_lines()
+        try:
+            from resource import Resource as _R
+            _rs = _R()
+            try:
+                from structure import Structure as _S
+                _st = _S()
+                try:
+                    n = 0
+                    for perm in permits:
+                        if perm.get("schema_id") is None:
+                            continue  # 唔係 by-id permit，唔登記
+                        if perm.get("imported") != ".schema":
+                            continue
+                        if perm.get("module_id") not in (None, mid):
+                            continue
+                        # resource_schema（tree 2 = module tree，terminology）
+                        rsid = _rs.add_resource_schema(
+                            2, perm["schema_id"])
+                        # structure_schema（物理位置：package 2058-=
+                        # structure_module id 攞，file = schema.py，行號 AST）
+                        package_id = self._structure_module_id(mid, None)
+                        file_id = self._structure_module_id(mid, "schema.py")
+                        line = lines.get(perm.get("symbols"))
+                        if rsid and package_id:
+                            _st.add_structure_schema(
+                                rsid, package_id,
+                                line_number=line, file_id=file_id)
+                        n += 1
+                finally:
+                    _st.close()
+            finally:
+                _rs.close()
+        except Exception:
+            return
+        if n:
+            print(f"[terminology] resource_schema 真實登記：{n} 個 schema"
+                  f"（by permit.db import_permit）")
+
+    def _schema_symbol_lines(self):
+        """AST 掃 schema.py 攞 DDL symbol -> 真實行號（零 hardcode）"""
+        import os as _os
+        import importlib.util as _ilu
+        _ast_sp = _ilu.spec_from_file_location(
+            "_stdlib_ast",
+            _os.path.join(_os.path.dirname(_os.__file__), "ast.py"))
+        _ast_m = _ilu.module_from_spec(_ast_sp)
+        _ast_sp.loader.exec_module(_ast_m)
+        out = {}
+        try:
+            with open(r"C:\projects\meta\terminology\schema.py", "r",
+                      encoding="utf-8") as f:
+                tree = _ast_m.parse(f.read())
+        except (OSError, SyntaxError):
+            return out
+        for node in tree.body:
+            if isinstance(node, _ast_m.Assign):
+                for t in node.targets:
+                    if isinstance(t, _ast_m.Name) and \
+                            t.id.endswith("_DDL"):
+                        out[t.id] = node.lineno
+        return out
+
+    def _structure_module_id(self, module_id, value):
+        """structure.db structure_module.id by module_id + value（package/file層）
+
+        value=None -> package 層（structure_type.meta='package'）；
+        value='schema.py' -> file 層（structure_type.meta='file'）。
+        """
+        try:
+            import sqlite3 as _sq
+            _c = _sq.connect(r"C:\projects\meta\structure\structure.db")
+            try:
+                _c.row_factory = _sq.Row
+                if value is None:
+                    r = _c.execute(
+                        "SELECT sm.id FROM structure_module sm"
+                        " JOIN structure_type st ON st.id = sm.structure_type_id"
+                        " WHERE sm.module_id = ?"
+                        " AND st.meta = 'package' LIMIT 1",
+                        (module_id,)).fetchone()
+                else:
+                    r = _c.execute(
+                        "SELECT sm.id FROM structure_module sm"
+                        " JOIN structure_type st ON st.id = sm.structure_type_id"
+                        " WHERE sm.module_id = ? AND sm.value = ?"
+                        " AND st.meta = 'file' ORDER BY sm.id LIMIT 1",
+                        (module_id, value)).fetchone()
+                return r["id"] if r else None
+            finally:
+                _c.close()
+        except Exception:
+            return None
 
     def _attach_value_db(self):
         """ATTACH value.db 做 vdb（SSOT：值資產由 value module 擁有）
