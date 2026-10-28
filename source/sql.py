@@ -94,7 +94,11 @@ class SqlStore:
 
     # ---------- api_proof（2026-10-28：真實執行證據先可以註冊 api）----------
     def api_by_path_method(self, path, method):
-        """搵 api.id（path + method 配對，冪等）"""
+        """搵 api.id（path + method 配對，冪等）
+
+        2026-10-28：支援 <id> pattern —— /sources/15 自動對應
+        註冊嘅 /sources/<id>（數字段換 <id> 再查）。
+        """
         tr = self.conn.execute(
             "SELECT id FROM api_type WHERE value = ?", (method,)).fetchone()
         if not tr:
@@ -102,7 +106,18 @@ class SqlStore:
         r = self.conn.execute(
             "SELECT id FROM api WHERE api = ? AND api_type_id = ?",
             (path, tr["id"])).fetchone()
-        return r["id"] if r else None
+        if r:
+            return r["id"]
+        # pattern 配對：/sources/15 -> /sources/<id>（數字段 -> <id>）
+        import re
+        pat = re.sub(r"/\d+", "/<id>", path)
+        if pat != path:
+            r = self.conn.execute(
+                "SELECT id FROM api WHERE api = ? AND api_type_id = ?",
+                (pat, tr["id"])).fetchone()
+            if r:
+                return r["id"]
+        return None
 
     def record_api_proof(self, path, method, http_status, is_pass=None,
                          proof_type="live_http", ref_id=None,
