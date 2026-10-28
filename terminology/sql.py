@@ -1504,9 +1504,15 @@ class SqlStore:
             if sid is None:
                 skipped += 1
                 continue
-            # 寫 expected_source（value = *_id，value_id 自動登記）
+            # formula：準確格式（限 output by id，指明 db/表/condition/維度，
+            # 唔 select *）—— condition × 5W2H 維度都要指明先精準
+            ftext = (f'xxx=<select id from "{tbl}" '
+                     f'where condition_id = "{q["condition_id"]}" '
+                     f'and "5w2h_id" = "{q["5w2h_id"]}">')
+            # 寫 expected_source（value = *_id，value_id 自動登記 + formula 真 id）
             try:
-                esid = self.set_expected_source(q["id"], value=str(sid))
+                esid = self.set_expected_source(q["id"], value=str(sid),
+                                                formula=ftext)
                 # 同步 question.expected_source_id（直接指住）
                 self.conn.execute(
                     "UPDATE question SET expected_source_id = ? WHERE id = ?",
