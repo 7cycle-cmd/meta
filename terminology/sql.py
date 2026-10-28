@@ -18,7 +18,7 @@ import sqlite3
 # `from .schema import *` 係 wildcard，permit 系統唔可以睇到佢攞咗咩。
 # 而家：顯式列出全部 symbol（逐個可 permit）+ 啟動時檢查 permit。
 from .schema import (  # noqa: F401  （逐個 symbol，permit 化）
-    INDUSTRY_DDL, EVIDENCE_DDL, CONDITION_DDL, W5H2_DDL, VALUE_DDL,
+    INDUSTRY_DDL, EVIDENCE_DDL, CONDITION_DDL, W5H2_DDL,
     REGISTRY_DDL, RUN_DDL, FLOW_DDL, STEP_DDL, STEP_INPUT_DDL,
     FLOW_BRANCH_DDL, NEXT_FLOW_DDL,
     EXPECTED_DDL, OPERATOR_DDL, ANSWER_DDL, BOOLEAN_DDL,
@@ -205,6 +205,7 @@ class SqlStore:
         # 2026-10-27（用戶要求）：value 表升做獨立 module（value.db）
         # terminology 唔再擁有 value 表 —— ATTACH value.db 做 vdb（SSOT）
         self._attach_value_db()
+        self._migrate_drop_value_table()
         self._migrate_registry_schema()
         # 建表（全部 IF NOT EXISTS，冪等）+ 字典 seed
         # 注意：VALUE_DDL 唔再喺呢度建（value 表由 value module 擁有）
@@ -429,6 +430,22 @@ class SqlStore:
             self.conn.execute("ALTER TABLE run ADD COLUMN rule_id INTEGER")
             self.conn.commit()
             print("[terminology] run 表加 rule_id 欄")
+
+    def _migrate_drop_value_table(self):
+        """遷移（幂等）：drop 舊遺留 value 表（2026-10-28 用戶確認）
+
+        value 係獨立 module（value.db SSOT），terminology ATTACH 做 vdb。
+        呢張表係 clone 時代遺留（27 行測試垃圾，無 FK 引用）—— 直接 drop。
+        """
+        has = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='value'"
+        ).fetchone()
+        if not has:
+            return
+        n = self.conn.execute("SELECT COUNT(*) c FROM value").fetchone()["c"]
+        self.conn.execute("DROP TABLE value")
+        self.conn.commit()
+        print(f"[migrate] terminology drop 舊遺留 value 表（{n} 行測試資料）")
 
     def _migrate_registry_schema(self):
         """重建舊 registry 定義；非空舊表無法無損映射時明確停止。"""

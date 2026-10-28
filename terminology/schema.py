@@ -63,14 +63,9 @@ CREATE TABLE IF NOT EXISTS "5W2H" (
 );
 """
 
-VALUE_DDL = """
-CREATE TABLE IF NOT EXISTS value (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    value       TEXT,
-    taxonomy_id INTEGER,             -- taxonomy.registry.id（邊個 module 登記，2026-10-27）
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
-);
-"""
+# 2026-10-28（用戶確認）：terminology 唔再擁有 value 表 ——
+# value 由 value module 擁有（value.db SSOT），terminology ATTACH 做 vdb。
+# 舊遺留 VALUE_DDL 已移除（啟動時 drop 舊表，唔再建）。
 
 REGISTRY_DDL = """
 CREATE TABLE IF NOT EXISTS registry (
@@ -427,7 +422,7 @@ CREATE TABLE IF NOT EXISTS question_template (
 """
 
 __all__ = ["INDUSTRY_DDL", "EVIDENCE_DDL",
-           "CONDITION_DDL", "W5H2_DDL", "VALUE_DDL", "RUN_DDL", "FLOW_DDL", "STEP_DDL",
+           "CONDITION_DDL", "W5H2_DDL", "RUN_DDL", "FLOW_DDL", "STEP_DDL",
            "STEP_INPUT_DDL",
            "EXPECTED_SOURCE_DDL", "STEP_OUTPUT_DDL",
            "OUTPUT_TYPE_DDL", "OUTPUT_BY_DDL", "HARDCODE_VALUE_DDL",
