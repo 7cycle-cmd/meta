@@ -1,98 +1,114 @@
-"""sql.py — identity.db 存取層（身份層：名字 → id 對應）"""
+"""sql.py — identity.db 存取層（身份層：value × condition × flow × step）"""
 
 import sqlite3
 
-from .function import *  # noqa: F401,E402
+from .schema import REGISTRY_DDL  # noqa: F401
 
 DB_PATH = r"C:\projects\meta\identity\identity.db"
-
-# 支援嘅身份類型（kind）
-# identity 表：kind + name 唯一（package / flow / step / skill / module / resource / db）
-KINDS = ["package", "flow", "step", "skill", "module", "resource", "db"]
-
-
 
 
 class SqlStore:
     def __init__(self, db_path=DB_PATH):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
-        self._init_schema()
-
-    def _init_schema(self):
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS registry (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                kind       TEXT NOT NULL,             -- package / skill / flow / step ...
-                name       TEXT NOT NULL,             -- 個名（例如 codegen / create_table）
-                ref_id     INTEGER,                   -- 對應返來源系統嘅 id（例如 system.skill.id）
-                taxonomy_id INTEGER,                  -- taxonomy.db taxonomy.id（分類）
-                resource_id INTEGER,                  -- resource.db resource.id（資源）
-                description TEXT,
-                is_active  BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-                UNIQUE (kind, name)
-            )
-        """)
+        self._migrate_old_registry()
+        self.conn.execute(REGISTRY_DDL)
         self.conn.commit()
+
+    def _migrate_old_registry(self):
+        """遷移（幂等）：舊 registry（kind + name）-> 新版（value × condition × flow × step）
+
+        2026-10-28（用戶要求）：kind 舊設計已撤換。
+        舊表有 kind 欄 -> DROP（舊資料係 kind+name，冇 value 鏈，搬唔到）。
+        新表用 REGISTRY_DDL 重建（空）。
+        """
+        has = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='registry'").fetchone()
+        if not has:
+            return
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('registry')")}
+        if "kind" not in cols:
+            return  # 已新版
+        n = self.conn.execute(
+            "SELECT COUNT(*) FROM registry").fetchone()[0]
+        self.conn.execute("DROP TABLE registry")
+        self.conn.commit()
+        print(f"[identity] 舊 registry（kind+name，{n} 行）drop —— "
+              f"新設計：value × condition × flow × step")
 
     # ---------- 登記 ----------
-    def register(self, kind, name, ref_id=None, description=None,
-                 taxonomy_id=None, resource_id=None):
-        """登記一個身份（冪等：已存在就更新 ref_id/description）
+    def register(self, value_id, condition_id, flow_id, step_id,
+                 taxonomy_id=None, permit_id=None, description=None):
+        """登記一個身份（冪等：value × condition × flow × step 組合）
 
-        2026-10-23：加 taxonomy_id / resource_id 選填欄位
+        value_id     = value.db value.id（身份主檔）
+        condition_id = terminology.condition.id（判斷）
+        flow_id      = terminology.flow.id（證明 flow）
+        step_id      = terminology.step.id（證明步驟）
+        5W2H 7 步：what/where/when/who/why/how/how much
         """
-        if kind not in KINDS:
-            raise ValueError(f"唔知嘅 kind: {kind}。可用：{KINDS}")
         self.conn.execute(
-            """INSERT INTO registry (kind, name, ref_id, description,
-                                     taxonomy_id, resource_id)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(kind, name) DO UPDATE SET
-                   ref_id = COALESCE(excluded.ref_id, registry.ref_id),
-                   description = COALESCE(excluded.description, registry.description),
+            """INSERT INTO registry (value_id, condition_id, flow_id,
+                                     step_id, taxonomy_id, permit_id,
+                                     description)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(value_id, condition_id, flow_id, step_id)
+               DO UPDATE SET
                    taxonomy_id = COALESCE(excluded.taxonomy_id, registry.taxonomy_id),
-                   resource_id = COALESCE(excluded.resource_id, registry.resource_id),
+                   permit_id = COALESCE(excluded.permit_id, registry.permit_id),
+                   description = COALESCE(excluded.description, registry.description),
                    is_active = 1""",
-            (kind, name, ref_id, description, taxonomy_id, resource_id))
+            (value_id, condition_id, flow_id, step_id,
+             taxonomy_id, permit_id, description))
         self.conn.commit()
         r = self.conn.execute(
-            "SELECT id FROM registry WHERE kind = ? AND name = ?", (kind, name)).fetchone()
+            "SELECT id FROM registry"
+            " WHERE value_id = ? AND condition_id = ?"
+            " AND flow_id = ? AND step_id = ?",
+            (value_id, condition_id, flow_id, step_id)).fetchone()
         return r["id"] if r else None
 
     # ---------- 查詢 ----------
-    def lookup(self, kind, name):
-        """按 kind + name 查 id"""
-        return self.conn.execute(
-            "SELECT * FROM registry WHERE kind = ? AND name = ? AND is_active = 1",
-            (kind, name)).fetchone()
+    def lookup(self, value_id, condition_id=None, flow_id=None,
+               step_id=None):
+        """按 value（+ condition/flow/step 可選）查身份"""
+        sql = "SELECT * FROM registry WHERE value_id = ? AND is_active = 1"
+        args = [value_id]
+        if condition_id:
+            sql += " AND condition_id = ?"
+            args.append(condition_id)
+        if flow_id:
+            sql += " AND flow_id = ?"
+            args.append(flow_id)
+        if step_id:
+            sql += " AND step_id = ?"
+            args.append(step_id)
+        return self.conn.execute(sql, tuple(args)).fetchall()
 
-    def lookup_all(self, kind=None):
-        """列出全部身份（可按 kind 篩選）"""
+    def lookup_all(self, value_id=None, flow_id=None, active_only=True):
+        """列出全部身份（可按 value / flow 篩選）"""
         sql = "SELECT * FROM registry WHERE 1=1"
-        args = ()
-        if kind:
-            sql += " AND kind = ?"
-            args = (kind,)
-        sql += " ORDER BY kind, name"
+        args = []
+        if value_id:
+            sql += " AND value_id = ?"
+            args.append(value_id)
+        if flow_id:
+            sql += " AND flow_id = ?"
+            args.append(flow_id)
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY value_id, id"
         return [dict(r) for r in self.conn.execute(sql, args)]
 
-    def resolve(self, kind, name_or_id):
-        """由名或 id 攞身份
-
-        name_or_id 係 int -> 按 id 查
-        name_or_id 係 str -> 按 kind + name 查
-        """
-        if isinstance(name_or_id, int):
-            return self.conn.execute(
-                "SELECT * FROM registry WHERE id = ? AND is_active = 1", (name_or_id,)).fetchone()
-        return self.lookup(kind, name_or_id)
-
-    def kinds(self):
-        """列出所有已用嘅 kind"""
-        return [r["kind"] for r in self.conn.execute(
-            "SELECT DISTINCT kind FROM registry ORDER BY kind")]
+    def resolve(self, value_id, condition_id, flow_id, step_id):
+        """由 value + condition + flow + step 攞身份（冇 = None）"""
+        return self.conn.execute(
+            "SELECT * FROM registry"
+            " WHERE value_id = ? AND condition_id = ? AND flow_id = ?"
+            " AND step_id = ? AND is_active = 1",
+            (value_id, condition_id, flow_id, step_id)).fetchone()
 
     def commit(self):
         self.conn.commit()

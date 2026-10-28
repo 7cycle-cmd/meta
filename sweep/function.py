@@ -165,17 +165,31 @@ def _find_islands(path):
 def _has_identity(db_name, table_name):
     """檢查一張表有冇身份證明（identity.db 有登記）
 
-    有身份（kind + name 對應） = 證明到身份 = 唔可以刪
-    冇身份 = 證明唔到 = sweep 可以 drop
+    新設計（2026-10-28）：身份 = value × condition × flow × step。
+    sweep 係 db/table 層 —— 查 identity 有冇 table 對應嘅 flow（flow_name =
+    db.table 名）登記；查唔到 = 冇身份證明。
     """
     try:
         from identity import Identity
         ident = Identity()
         try:
-            # kind = db 名（例如 flow.db -> flow），name = 表名
-            kind = db_name.replace(".db", "")
-            r = ident.lookup(kind, table_name)
-            return r is not None
+            # flow_id 由 terminology flow_name 攞（db.table -> flow_name）
+            import sqlite3
+            tc = sqlite3.connect(r"C:\projects\meta\terminology\terminology.db")
+            tc.row_factory = sqlite3.Row
+            try:
+                fr = tc.execute(
+                    "SELECT id FROM flow WHERE flow_name = ?"
+                    " AND is_active = 1",
+                    (f"{db_name}.{table_name}",)).fetchone()
+                flow_id = fr["id"] if fr else None
+            finally:
+                tc.close()
+            if not flow_id:
+                return False
+            # lookup_all filter flow_id：有任何 value × flow 身份 = 有證明
+            rows = ident.list_all(flow_id=flow_id)
+            return len(rows) > 0
         finally:
             ident.close()
     except Exception:

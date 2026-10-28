@@ -851,6 +851,14 @@ class SqlStore:
             self.conn.execute(
                 "UPDATE operator SET expression = ? WHERE meta = ?",
                 (expr, meta))
+        # 5W2H（7 步：what/where/when/who/why/how/how much，2026-10-28）
+        for wmeta in ("what", "where", "when", "who", "why", "how",
+                      "how much"):
+            self.conn.execute(
+                'INSERT INTO "5W2H" (meta)'
+                " SELECT ? WHERE NOT EXISTS"
+                ' (SELECT 1 FROM "5W2H" WHERE meta = ?)',
+                (wmeta, wmeta))
         self.conn.commit()
 
     def terms(self, active_only=True):
