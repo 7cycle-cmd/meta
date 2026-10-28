@@ -26,6 +26,7 @@ from .schema import (  # noqa: F401  （逐個 symbol，permit 化）
     EXPECTED_SOURCE_DDL, STEP_OUTPUT_DDL,
     OUTPUT_TYPE_DDL, OUTPUT_BY_DDL, HARDCODE_VALUE_DDL,
     WORD_CATEGORY_DDL, SOURCE_REGISTER_DDL,
+    QUESTION_TEMPLATE_DDL,
 )
 
 DB_PATH = r"C:\projects\meta\terminology\terminology.db"
@@ -218,6 +219,7 @@ class SqlStore:
             EXPECTED_DDL, OPERATOR_DDL, ANSWER_DDL, BOOLEAN_DDL,
             QUESTION_DDL, SEQ_DDL, STATUS_DDL,
             WORD_CATEGORY_DDL, SOURCE_REGISTER_DDL,
+            QUESTION_TEMPLATE_DDL,
         ]))
         self.conn.commit()
         # 2026-10-28（用戶設計：resource 2 表接實體位置）——
@@ -1234,6 +1236,50 @@ class SqlStore:
             args = (question_id,)
         sql += " ORDER BY es.id"
         return [dict(r) for r in self.conn.execute(sql, args)]
+
+    # ---------- question_template（2026-10-28 用戶要求） ----------
+    # 每行 = 一條可重用提問定義：value_id | condition_id | operator_id |
+    #        expected_source_id | is_active
+    def add_question_template(self, value_id=0, condition_id=None,
+                              operator_id=None, expected_source_id=None):
+        """新增一條 question_template（冪等：UNIQUE 5 鍵）"""
+        if condition_id is None or operator_id is None:
+            raise ValueError("condition_id / operator_id 至少一個")
+        self.conn.execute(
+            "INSERT INTO question_template"
+            " (value_id, condition_id, operator_id, expected_source_id)"
+            " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM question_template"
+            "  WHERE value_id = ? AND condition_id = ? AND operator_id = ?"
+            "    AND expected_source_id IS ?)",
+            (value_id, condition_id, operator_id, expected_source_id,
+             value_id, condition_id, operator_id, expected_source_id))
+        self.conn.commit()
+        r = self.conn.execute(
+            "SELECT id FROM question_template"
+            " WHERE value_id = ? AND condition_id = ? AND operator_id = ?"
+            "   AND expected_source_id IS ? ORDER BY id DESC LIMIT 1",
+            (value_id, condition_id, operator_id, expected_source_id
+             )).fetchone()
+        return r["id"] if r else None
+
+    def question_templates(self, active_only=True, limit=100):
+        """列出 question_template（JOIN condition/operator/expected_source）"""
+        sql = ("SELECT qt.*, c.meta AS condition_meta,"
+               " op.meta AS operator_meta, es.value AS expected_value,"
+               " es.value_id AS expected_value_id"
+               " FROM question_template qt"
+               " LEFT JOIN condition c ON c.id = qt.condition_id"
+               " LEFT JOIN operator op ON op.id = qt.operator_id"
+               " LEFT JOIN expected_source es ON es.id = qt.expected_source_id")
+        if active_only:
+            sql += " WHERE qt.is_active = 1"
+        sql += " ORDER BY qt.id DESC LIMIT ?"
+        return [dict(r) for r in self.conn.execute(sql, (limit,))]
+
+    def count_question_templates(self):
+        return self.conn.execute(
+            "SELECT COUNT(*) c FROM question_template").fetchone()["c"]
 
     def record_step_output(self, step_id, run_id, question_id, value,
                            expert_id=None, output_format="1,0"):

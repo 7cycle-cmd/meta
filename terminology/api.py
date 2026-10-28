@@ -168,6 +168,21 @@ class Terminology:
         """列出 expected_source（可按 question 篩選）"""
         return self.store.expected_sources(question_id)
 
+    # ---------- question_template（2026-10-28 用戶要求）----------
+    def add_question_template(self, value_id=0, condition_id=None,
+                              operator_id=None, expected_source_id=None):
+        """新增一條 question_template（可重用提問）"""
+        return self.store.add_question_template(
+            value_id, condition_id, operator_id, expected_source_id)
+
+    def question_templates(self, active_only=True, limit=100):
+        """列出 question_template"""
+        return self.store.question_templates(active_only, limit)
+
+    def count_question_templates(self):
+        """question_template 總數"""
+        return self.store.count_question_templates()
+
     def record_step_output(self, step_id, run_id, question_id, value,
                            expert_id=None, output_format="1,0"):
         """記錄一步嘅實際輸出（1,0）"""

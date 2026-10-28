@@ -405,6 +405,26 @@ CREATE TABLE IF NOT EXISTS source_register (
 );
 """
 
+# question_template：提問模板（2026-10-28 用戶要求）
+# 每行 = 一條可重用嘅提問定義：
+#   value_id            = 提交值（value.db id；0 = 模板未綁值）
+#   condition_id        = 判斷條件（condition.id）
+#   operator_id         = 比對方式（operator.id，== / != ...）
+#   expected_source_id  = 期望值來源（expected_source.id，攞期望 / measure unit）
+QUESTION_TEMPLATE_DDL = """
+CREATE TABLE IF NOT EXISTS question_template (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    value_id            INTEGER NOT NULL DEFAULT 0,  -- 提交值（value.db id）
+    condition_id        INTEGER NOT NULL,            -- condition.id
+    operator_id         INTEGER NOT NULL,            -- operator.id
+    expected_source_id  INTEGER,                     -- expected_source.id
+    is_active           BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (value_id, condition_id, operator_id, expected_source_id)
+);
+"""
+
 __all__ = ["INDUSTRY_DDL", "EVIDENCE_DDL",
            "CONDITION_DDL", "W5H2_DDL", "VALUE_DDL", "RUN_DDL", "FLOW_DDL", "STEP_DDL",
            "STEP_INPUT_DDL",
@@ -413,4 +433,5 @@ __all__ = ["INDUSTRY_DDL", "EVIDENCE_DDL",
            "FLOW_BRANCH_DDL", "NEXT_FLOW_DDL",
            "EXPECTED_DDL", "OPERATOR_DDL", "ANSWER_DDL", "BOOLEAN_DDL",
            "QUESTION_DDL", "SEQ_DDL", "STATUS_DDL", "REGISTRY_DDL",
-           "WORD_CATEGORY_DDL", "SOURCE_REGISTER_DDL"]
+           "WORD_CATEGORY_DDL", "SOURCE_REGISTER_DDL",
+           "QUESTION_TEMPLATE_DDL"]
