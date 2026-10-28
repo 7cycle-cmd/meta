@@ -235,55 +235,135 @@ CREATE TABLE IF NOT EXISTS proof_line_ast (
 #     line 1401-1450  = python * api
 #     line 1451-1500  = python * rest_api
 
-# formula_type 表：公式/語句類型字典
-# 一行 = 一個「language × 類型」組合，例如：
-#   python * definition / python * function / python * api / python * rest_api
-#   SQL * select / SQL * update / SQL * insert / SQL * delete
-FORMULA_TYPE_DDL = """
-CREATE TABLE IF NOT EXISTS formula_type (
+# ============ formula subject × action × object（2026-10-28 用戶 redesign）============
+# 舊 formula_type（language_id + meta 兩欄分類值）係錯設計（用戶指出）。
+# 正規化：subject * action * object 三張字典（每張只 1 個 meta）+ formula 組合表。
+#   python * definition  = subject(python) × action(definition) × object(class)
+#   python * function    = subject(python) × action(function)  × object(function)
+#   python * api         = subject(python) × action(api)       × object(api)
+#   python * route       = subject(python) × action(route)     × object(route)
+#   python * rest_api    = subject(python) × action(rest_api)  × object(endpoint)
+#   python * formula     = subject(python) × action(formula)   × object(formula)
+#   sql * select         = subject(sql)    × action(select)    × object(table)
+#   sql * update         = subject(sql)    × action(update)    × object(table)
+#   sql * insert         = subject(sql)    × action(insert)    × object(table)
+#   sql * delete         = subject(sql)    × action(delete)    × object(table)
+#   sql * create         = subject(sql)    × action(create)    × object(table)
+#   sql * alter          = subject(sql)    × action(alter)     × object(table)
+# 每張字典表只有 1 個 meta 欄（用戶要求：each table only allow 1 meta）。
+
+FORMULA_SUBJECT_DDL = """
+CREATE TABLE IF NOT EXISTS formula_subject (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    language_id INTEGER NOT NULL,          -- programming_language.id（1=python 2=SQL）
-    meta        TEXT    NOT NULL,          -- definition / select / update / function / api...
+    meta        TEXT    NOT NULL UNIQUE,  -- python / sql
     description TEXT,
     is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-    UNIQUE (language_id, meta)
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 """
 
-# formula_type 預設種子（冪等）：用戶例子 2026-10-28
-# language_id：1=python，25=sql（programming_language 真實 id）
-DEFAULT_FORMULA_TYPES = [
-    (1, "definition", "python 定義（decorator / class / 常量）"),
-    (1, "function", "python 函數"),
-    (1, "api", "python API 方法"),
-    (1, "rest_api", "python REST endpoint"),
-    (1, "formula", "python formula（@formula_def）"),
-    (25, "select", "SQL SELECT 查詢"),
-    (25, "update", "SQL UPDATE 更新"),
-    (25, "insert", "SQL INSERT 寫入"),
-    (25, "delete", "SQL DELETE 刪除"),
-    (25, "create", "SQL CREATE 建表"),
-    (25, "alter", "SQL ALTER 修改"),
+FORMULA_ACTION_DDL = """
+CREATE TABLE IF NOT EXISTS formula_action (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    meta        TEXT    NOT NULL UNIQUE,  -- definition / function / api / route / rest_api / formula / select / update / insert / delete / create / alter
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+FORMULA_OBJECT_DDL = """
+CREATE TABLE IF NOT EXISTS formula_object (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    meta        TEXT    NOT NULL UNIQUE,  -- class / decorator / constant / function / api / route / endpoint / formula / table / row / column / field
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# formula 組合表：subject × action × object（全 by id，一行一個組合）
+FORMULA_DDL = """
+CREATE TABLE IF NOT EXISTS formula (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject_id  INTEGER NOT NULL,          -- formula_subject.id
+    action_id   INTEGER NOT NULL,          -- formula_action.id
+    object_id   INTEGER NOT NULL,          -- formula_object.id
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (subject_id, action_id, object_id)
+);
+"""
+
+# formula 預設種子（冪等）：subject × action × object 組合（2026-10-28 用戶例子）
+# action 次序：python 版 + sql 版；加咗 route（用戶問「where is python * route?」）
+DEFAULT_FORMULA_SUBJECTS = [
+    ("python", "Python 程式"),
+    ("sql", "SQL 查詢語言"),
 ]
 
-# file_line_type 表：檔案行範圍分段（一行 = 一個連續範圍）
+DEFAULT_FORMULA_ACTIONS = [
+    ("definition", "定義"),
+    ("function", "函數"),
+    ("api", "API 方法"),
+    ("route", "路由"),
+    ("rest_api", "REST endpoint"),
+    ("formula", "公式（@formula_def）"),
+    ("select", "SELECT 查詢"),
+    ("update", "UPDATE 更新"),
+    ("insert", "INSERT 寫入"),
+    ("delete", "DELETE 刪除"),
+    ("create", "CREATE 建表"),
+    ("alter", "ALTER 修改"),
+]
+
+DEFAULT_FORMULA_OBJECTS = [
+    ("class", "類別"),
+    ("decorator", "裝飾器"),
+    ("constant", "常量"),
+    ("function", "函數"),
+    ("api", "API"),
+    ("route", "路由"),
+    ("endpoint", "端點"),
+    ("formula", "公式"),
+    ("table", "表"),
+    ("row", "行"),
+    ("column", "欄"),
+    ("field", "欄位"),
+]
+
+# 預設組合（subject_meta, action_meta, object_meta, description）
+DEFAULT_FORMULAS = [
+    ("python", "definition", "class", "python 定義（def class）"),
+    ("python", "definition", "decorator", "python 定義（decorator）"),
+    ("python", "definition", "constant", "python 定義（常量）"),
+    ("python", "function", "function", "python 函數"),
+    ("python", "api", "api", "python API 方法"),
+    ("python", "route", "route", "python 路由"),
+    ("python", "rest_api", "endpoint", "python REST endpoint"),
+    ("python", "formula", "formula", "python formula（@formula_def）"),
+    ("sql", "select", "table", "SQL SELECT 查詢"),
+    ("sql", "update", "table", "SQL UPDATE 更新"),
+    ("sql", "insert", "table", "SQL INSERT 寫入"),
+    ("sql", "delete", "table", "SQL DELETE 刪除"),
+    ("sql", "create", "table", "SQL CREATE 建表"),
+    ("sql", "alter", "table", "SQL ALTER 修改"),
+]
+
+# file_line_type 表：檔案行範圍分段（一行 = 一個連續範圍；全 by id）
 #   file_id      = programming.file.id（屬邊個檔案）
 #   start_line   = 開始行號（含）
 #   end_line     = 結束行號（含）
-#   language_id  = programming_language.id（語言）
-#   formula_type_id = formula_type.id（呢段係咩類型）
+#   formula_id   = formula.id（subject × action × object 組合，全 by id）
 #   function_id  = ast.db function.id（可選；function 專屬段）
-# 用途：scanner — 知道一個檔案邊段係咩（SQL select / python api...），
-#       line_number 定位 -> 搵到 formula_type 歸屬。
 FILE_LINE_TYPE_DDL = """
 CREATE TABLE IF NOT EXISTS file_line_type (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id          INTEGER NOT NULL,     -- programming.file.id
     start_line       INTEGER NOT NULL,     -- 開始行（含）
     end_line         INTEGER NOT NULL,     -- 結束行（含）
-    language_id      INTEGER NOT NULL,     -- programming_language.id
-    formula_type_id  INTEGER NOT NULL,     -- formula_type.id
+    formula_id       INTEGER NOT NULL,     -- formula.id（subject×action×object）
     function_id      INTEGER,              -- ast.db function.id（可選）
     is_active        BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at       TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
@@ -588,5 +668,8 @@ __all__ = ["PROGRAMMING_LANGUAGE_DDL", "LANGUAGE_ALIAS_DDL",
            "SQL_TYPE_DDL", "DEFAULT_SQL_TYPES", "EVIDENCE_AST_DDL",
            "EVIDENCE_DECORATORS_DDL", "EVIDENCE_SQL_DDL",
            "PROGRAMMING_EVIDENCE_DDL",
-           "FORMULA_TYPE_DDL", "DEFAULT_FORMULA_TYPES",
+           "FORMULA_SUBJECT_DDL", "FORMULA_ACTION_DDL", "FORMULA_OBJECT_DDL",
+           "FORMULA_DDL",
+           "DEFAULT_FORMULA_SUBJECTS", "DEFAULT_FORMULA_ACTIONS",
+           "DEFAULT_FORMULA_OBJECTS", "DEFAULT_FORMULAS",
            "FILE_LINE_TYPE_DDL"]

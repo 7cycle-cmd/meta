@@ -23,10 +23,11 @@ class SqlStore:
         except Exception:
             self.conn.close()
             raise
+        self._migrate_formula_sao()
         self._seed_sql_types()
         self._seed_python_syntax()
         self._seed_structure_types()
-        self._seed_formula_types()
+        self._seed_formula_sao()
         # 2026-10-27：全量官方語法/語句 seed（source_proof 證明）
         self._seed_python_operator()
         self._seed_sql_statements()
@@ -58,39 +59,72 @@ class SqlStore:
     # 檔案分段：「第幾行到第幾行係咩 formula 類型」
     #   e.g. line 501-1000 = SQL * select / line 1301-1330 = python * function A
 
-    def formula_types(self, language_id=None, active_only=True):
-        """列出 formula_type 字典（可按語言篩選）"""
-        sql = ("SELECT ft.*, pl.meta AS language"
-               " FROM formula_type ft"
-               " LEFT JOIN programming_language pl ON pl.id = ft.language_id")
-        args = []
-        if active_only:
-            sql += " WHERE ft.is_active = 1"
-        if language_id:
-            sql += " AND ft.language_id = ?"
-            args.append(language_id)
-        sql += " ORDER BY ft.language_id, ft.id"
-        return [dict(r) for r in self.conn.execute(sql, args)]
+    # ---------- formula subject × action × object（2026-10-28 用戶 redesign）----------
+    # 舊 formula_type（language_id + meta）係錯設計（用戶指出）。
+    # 正規化：subject / action / object 三張字典（每張只 1 個 meta）
+    #        + formula 組合表（全 by id）+ file_line_type（formula_id by id）。
 
-    def formula_type_id(self, language_id, meta):
-        """formula_type.id by language + meta"""
-        r = self.conn.execute(
-            "SELECT id FROM formula_type WHERE language_id = ? AND meta = ?",
-            (language_id, meta)).fetchone()
-        return r["id"] if r else None
+    def formula_subjects(self, active_only=True):
+        """列出 subject 字典（python / sql）"""
+        sql = "SELECT * FROM formula_subject"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    def formula_actions(self, active_only=True):
+        """列出 action 字典（definition / function / api / route / rest_api / formula / select...）"""
+        sql = "SELECT * FROM formula_action"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    def formula_objects(self, active_only=True):
+        """列出 object 字典（class / decorator / constant / function / api / route / endpoint / formula / table...）"""
+        sql = "SELECT * FROM formula_object"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    def formulas_sao(self, active_only=True):
+        """列出 formula 組合（subject × action × object，全 by id）"""
+        sql = ("SELECT f.id, fs.meta AS subject, fa.meta AS action,"
+               " fo.meta AS object, f.description"
+               " FROM formula f"
+               " JOIN formula_subject fs ON fs.id = f.subject_id"
+               " JOIN formula_action fa ON fa.id = f.action_id"
+               " JOIN formula_object fo ON fo.id = f.object_id")
+        if active_only:
+            sql += " WHERE f.is_active = 1"
+        sql += " ORDER BY f.id"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    def formula_id(self, subject_meta, action_meta, object_meta):
+        """formula.id by subject×action×object meta（搵唔到 -> None）"""
+        return self.conn.execute(
+            "SELECT f.id FROM formula f"
+            " JOIN formula_subject fs ON fs.id = f.subject_id"
+            " JOIN formula_action fa ON fa.id = f.action_id"
+            " JOIN formula_object fo ON fo.id = f.object_id"
+            " WHERE fs.meta = ? AND fa.meta = ? AND fo.meta = ?",
+            (subject_meta, action_meta, object_meta)).fetchone()
 
     def add_file_line_type(self, file_id, start_line, end_line,
-                           language_id, formula_type_id, function_id=None):
-        """登記一個檔案行範圍分段（冪等：UNIQUE file_id+start+end）"""
+                           formula_id, function_id=None):
+        """登記一個檔案行範圍分段（冪等：UNIQUE file_id+start+end）
+
+        formula_id = formula.id（subject × action × object 組合）
+        """
         self.conn.execute(
             "INSERT INTO file_line_type"
-            " (file_id, start_line, end_line, language_id,"
-            "  formula_type_id, function_id)"
-            " SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
+            " (file_id, start_line, end_line, formula_id, function_id)"
+            " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
             " (SELECT 1 FROM file_line_type"
             "  WHERE file_id = ? AND start_line = ? AND end_line = ?)",
-            (file_id, start_line, end_line, language_id, formula_type_id,
-             function_id, file_id, start_line, end_line))
+            (file_id, start_line, end_line, formula_id, function_id,
+             file_id, start_line, end_line))
         self.conn.commit()
         r = self.conn.execute(
             "SELECT id FROM file_line_type"
@@ -100,12 +134,14 @@ class SqlStore:
 
     def file_line_types(self, file_id=None, active_only=True):
         """列出檔案行範圍分段（可按檔案篩選）"""
-        sql = ("SELECT flt.*, pl.meta AS language, ft.meta AS formula_type,"
-               " f.file_name, f.module_id"
+        sql = ("SELECT flt.*, fs.meta AS subject, fa.meta AS action,"
+               " fo.meta AS object, fl.file_name, fl.module_id"
                " FROM file_line_type flt"
-               " LEFT JOIN programming_language pl ON pl.id = flt.language_id"
-               " LEFT JOIN formula_type ft ON ft.id = flt.formula_type_id"
-               " LEFT JOIN file f ON f.id = flt.file_id")
+               " JOIN formula fm ON fm.id = flt.formula_id"
+               " JOIN formula_subject fs ON fs.id = fm.subject_id"
+               " JOIN formula_action fa ON fa.id = fm.action_id"
+               " JOIN formula_object fo ON fo.id = fm.object_id"
+               " LEFT JOIN file fl ON fl.id = flt.file_id")
         args = []
         if active_only:
             sql += " WHERE flt.is_active = 1"
@@ -116,19 +152,91 @@ class SqlStore:
         return [dict(r) for r in self.conn.execute(sql, args)]
 
     def line_lookup(self, file_id, line_number):
-        """俾一行行號，搵返呢行屬於邊個分段（formula_type）
+        """俾一行行號，搵返呢行屬於邊個分段（subject × action × object）
 
-        用途：scanner 定位 —— line 1305 -> python * function / line 700 -> SQL * select
+        用途：scanner 定位 —— line 1305 -> python × function × function
+                              / line 700 -> sql × select × table
         """
         return self.conn.execute(
-            "SELECT flt.*, ft.meta AS formula_type, pl.meta AS language"
+            "SELECT flt.*, fs.meta AS subject, fa.meta AS action,"
+            " fo.meta AS object"
             " FROM file_line_type flt"
-            " LEFT JOIN formula_type ft ON ft.id = flt.formula_type_id"
-            " LEFT JOIN programming_language pl ON pl.id = flt.language_id"
+            " JOIN formula fm ON fm.id = flt.formula_id"
+            " JOIN formula_subject fs ON fs.id = fm.subject_id"
+            " JOIN formula_action fa ON fa.id = fm.action_id"
+            " JOIN formula_object fo ON fo.id = fm.object_id"
             " WHERE flt.file_id = ? AND flt.is_active = 1"
             "   AND flt.start_line <= ? AND flt.end_line >= ?"
             " ORDER BY flt.start_line LIMIT 1",
             (file_id, line_number, line_number)).fetchone()
+
+    def _migrate_formula_sao(self):
+        """遷移（幂等）：舊 formula_type 表移除（2026-10-28 用戶 redesign）
+
+        舊設計（language_id + meta 兩欄分類值）係錯 -> 移除。
+        新設計：formula_subject / formula_action / formula_object
+        （每張只 1 個 meta）+ formula 組合表（全 by id）。
+        舊 file_line_type 若有 language_id / formula_type_id 欄 -> drop 重建
+        （新表 formula_id by id）。
+        """
+        has = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='formula_type'").fetchone()
+        if has:
+            self.conn.execute("DROP TABLE formula_type")
+            self.conn.commit()
+            print("[programming] formula_type 表移除（redesign SAO）")
+        # file_line_type：舊欄唔啱 -> drop 重建（新欄 formula_id）
+        has_flt = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='file_line_type'").fetchone()
+        if has_flt:
+            cols = {c[1] for c in self.conn.execute(
+                "PRAGMA table_info('file_line_type')")}
+            if "formula_id" not in cols:
+                self.conn.execute("DROP TABLE file_line_type")
+                self.conn.commit()
+                print("[programming] file_line_type 表重建（formula_id by id）")
+
+    def _seed_formula_sao(self):
+        """確保 subject / action / object 字典 + formula 組合有齊（冪等）"""
+        # 1. subject
+        for meta, desc in _schema.DEFAULT_FORMULA_SUBJECTS:
+            self.conn.execute(
+                "INSERT INTO formula_subject (meta, description)"
+                " SELECT ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM formula_subject WHERE meta = ?)",
+                (meta, desc, meta))
+        # 2. action
+        for meta, desc in _schema.DEFAULT_FORMULA_ACTIONS:
+            self.conn.execute(
+                "INSERT INTO formula_action (meta, description)"
+                " SELECT ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM formula_action WHERE meta = ?)",
+                (meta, desc, meta))
+        # 3. object
+        for meta, desc in _schema.DEFAULT_FORMULA_OBJECTS:
+            self.conn.execute(
+                "INSERT INTO formula_object (meta, description)"
+                " SELECT ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM formula_object WHERE meta = ?)",
+                (meta, desc, meta))
+        # 4. 組合
+        for subj, act, obj, desc in _schema.DEFAULT_FORMULAS:
+            self.conn.execute(
+                "INSERT INTO formula (subject_id, action_id, object_id,"
+                " description)"
+                " SELECT s.id, a.id, o.id, ?"
+                " FROM formula_subject s, formula_action a, formula_object o"
+                " WHERE s.meta = ? AND a.meta = ? AND o.meta = ?"
+                "   AND NOT EXISTS"
+                " (SELECT 1 FROM formula f"
+                "  JOIN formula_subject s2 ON s2.id = f.subject_id"
+                "  JOIN formula_action a2 ON a2.id = f.action_id"
+                "  JOIN formula_object o2 ON o2.id = f.object_id"
+                "  WHERE s2.meta = ? AND a2.meta = ? AND o2.meta = ?)",
+                (desc, subj, act, obj, subj, act, obj))
+        self.conn.commit()
 
     def _seed_sql_types(self):
         """確保 sql_type 表有齊 DDL / DML（冪等）"""
@@ -138,17 +246,6 @@ class SqlStore:
                 " SELECT ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM sql_type WHERE value = ?)",
                 (val, desc, val))
-        self.conn.commit()
-
-    def _seed_formula_types(self):
-        """確保 formula_type 表有齊（python×definition/function/api/rest_api、SQL×select/update/insert...）"""
-        for lang_id, meta, desc in _schema.DEFAULT_FORMULA_TYPES:
-            self.conn.execute(
-                "INSERT INTO formula_type (language_id, meta, description)"
-                " SELECT ?, ?, ? WHERE NOT EXISTS"
-                " (SELECT 1 FROM formula_type WHERE language_id = ?"
-                "  AND meta = ?)",
-                (lang_id, meta, desc, lang_id, meta))
         self.conn.commit()
 
     def _seed_python_syntax(self):

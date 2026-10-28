@@ -54,14 +54,36 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, {"status": "ok",
                               "module": "programming",
                               "api": "programming.rest_api"})
-        elif path == "/formula-types":
-            # formula_type 字典（python×function / SQL×select ...）
+        elif path == "/formula-subjects":
+            # subject 字典（python / sql）
             from programming import Programming
             p = Programming()
             try:
-                lid = self._qs().get("language_id")
-                self._send(200, {"formula_types": p.formula_types(
-                    int(lid) if lid else None)})
+                self._send(200, {"subjects": p.formula_subjects()})
+            finally:
+                p.close()
+        elif path == "/formula-actions":
+            # action 字典（definition / function / api / route / rest_api / formula / select...）
+            from programming import Programming
+            p = Programming()
+            try:
+                self._send(200, {"actions": p.formula_actions()})
+            finally:
+                p.close()
+        elif path == "/formula-objects":
+            # object 字典（class / function / api / route / endpoint / table...）
+            from programming import Programming
+            p = Programming()
+            try:
+                self._send(200, {"objects": p.formula_objects()})
+            finally:
+                p.close()
+        elif path == "/formulas":
+            # formula 組合（subject × action × object，全 by id）
+            from programming import Programming
+            p = Programming()
+            try:
+                self._send(200, {"formulas": p.formulas_sao()})
             finally:
                 p.close()
         elif path == "/file-line-types":
@@ -75,7 +97,7 @@ class _Handler(BaseHTTPRequestHandler):
             finally:
                 p.close()
         elif path == "/add-file-line-type":
-            # 登記分段（?file_id=&start_line=&end_line=&language_id=&formula_type_id=&function_id=）
+            # 登記分段（?file_id=&start_line=&end_line=&formula_id=&function_id=）
             q = self._qs()
             fid = q.get("file_id")
             if not fid:
@@ -88,15 +110,14 @@ class _Handler(BaseHTTPRequestHandler):
                     int(q["file_id"]),
                     int(q.get("start_line", 1)),
                     int(q.get("end_line", 1)),
-                    int(q.get("language_id", 1)),
-                    int(q.get("formula_type_id", 1)),
+                    int(q.get("formula_id", 1)),
                     int(q["function_id"]) if q.get("function_id") else None)
                 self._send(200, {"file_line_type_id": rid,
                                  "rows": p.file_line_types(int(fid))})
             finally:
                 p.close()
         elif path == "/line-lookup":
-            # 俾一行行號搵 formula_type（?file_id=&line=）
+            # 俾一行行號搵 subject×action×object（?file_id=&line=）
             q = self._qs()
             fid = q.get("file_id")
             line = q.get("line")
