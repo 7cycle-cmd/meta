@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS step (
     flow_id        INTEGER NOT NULL,
     question_id    INTEGER NOT NULL,       -- 永遠唔可以空（用戶 2026-10-25：never）
     seq_id         INTEGER NOT NULL,
+    action         TEXT,                   -- 動作名（1 line = 1 action；表話事，2026-10-28）
+    input_desc     TEXT,                   -- 輸入（食咩）
+    output_desc    TEXT,                   -- 輸出（出咩）
     is_active      BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     updated_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),

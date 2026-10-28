@@ -375,6 +375,7 @@ class SqlStore:
         self._migrate_test_condition()
         self._migrate_flow_run_rename()
         self._migrate_step_drop_child_flow()
+        self._migrate_step_action_columns()
         self._migrate_run_answer_id()
         self._migrate_question_condition_id()
         self._migrate_question_operator_id()
@@ -743,64 +744,54 @@ class SqlStore:
         之前 5 條 flow（schema/seed/sync/cutover/other × 30 步）只喺 migration.db，
         terminology.db 得 migration_audit 1 條 -> worker 揀唔到 flow。
 
-        呢度將 5 條 migrate_* flow（flow + condition + question + step）全部
-        登記埋 terminology.db。30 步 -> step_input 7 維度逐維填（點對點證明）。
-
-        冪等：flow_name UNIQUE + condition.meta UNIQUE + step UNIQUE(flow_id, seq_id)
+        2026-10-28 用戶修正：
+            -> 每個 action **一個 condition**（1 action = 1 condition，唔共享）
+            -> action/input_desc/output_desc 全部落 step 表（表係 main，零 hardcode）
         """
-        # 5 條 flow：flow_name -> [(step index, 5w2h dimension, 動作)]（5W2H 完整 7 維度）
-        # 全部 30 步用真實 5W2H 7 維度（what/where/when/who/why/how/how much）
+        # 5 條 flow：flow_name -> [(action, 5w2h dimension, input, output)]
+        # 全部用真實 5W2H 7 維度（what/where/when/who/why/how/how much）
+        # 每個 action 一個 condition（meta = f"{flow}_" + action 或 action 名）
         flows = {
             "migrate_schema": [
-                ("inspect_table", "what", "table 名 -> 現有欄位清單（PRAGMA table_info）"),
-                ("check_column", "where", "欄位名 -> 欄位存在/唔存在（0/1）"),
-                ("add_column", "how", "欄位名 + 型別 -> ALTER TABLE 完成"),
-                ("backfill_column", "who", "舊資料 + 新欄 -> 回填行數"),
-                ("verify_column", "why", "新欄位名 -> PRAGMA 確認欄位存在"),
-                ("verify_rowcount", "how much", "表名 -> 行數零損失確認"),
-                ("report", "when", "全部結果 -> migration 報告"),
+                ("inspect_table", "what", "table 名", "現有欄位清單（PRAGMA table_info）"),
+                ("check_column", "where", "欄位名", "欄位存在/唔存在（0/1）"),
+                ("add_column", "how", "欄位名 + 型別", "ALTER TABLE 完成"),
+                ("backfill_column", "who", "舊資料 + 新欄", "回填行數"),
+                ("verify_column", "why", "新欄位名", "PRAGMA 確認欄位存在"),
+                ("verify_rowcount", "how much", "表名", "行數零損失確認"),
+                ("report", "when", "全部結果", "migration 報告"),
             ],
             "migrate_seed": [
-                ("check_dictionary", "what", "字典表名 -> 現有值清單"),
-                ("check_symbol", "where", "symbol 名 -> 已存在/未存在（0/1）"),
-                ("insert_symbol", "how", "symbol + description -> INSERT 完成（冪等）"),
-                ("verify_symbol", "why", "symbol 名 -> SELECT 確認存在"),
-                ("report", "when", "全部結果 -> seed 報告"),
+                ("check_dictionary", "what", "字典表名", "現有值清單"),
+                ("check_symbol", "where", "symbol 名", "已存在/未存在（0/1）"),
+                ("insert_symbol", "how", "symbol + description", "INSERT 完成（冪等）"),
+                ("verify_symbol", "why", "symbol 名", "SELECT 確認存在"),
+                ("report", "when", "全部結果", "seed 報告"),
             ],
             "migrate_sync": [
-                ("check_source", "what", "來源名 -> 現有記錄"),
-                ("fetch_external", "where", "外部 API URL -> 原始返回（raw_json）"),
-                ("map_to_local", "how", "原始數據 -> 本地結構映射"),
-                ("upsert_local", "who", "映射後數據 -> INSERT/UPDATE 完成（冪等）"),
-                ("verify_count", "how much", "表名 -> 新增/更新行數"),
-                ("report", "when", "全部結果 -> sync 報告"),
+                ("check_source", "what", "來源名", "現有記錄"),
+                ("fetch_external", "where", "外部 API URL", "原始返回（raw_json）"),
+                ("map_to_local", "how", "原始數據", "本地結構映射"),
+                ("upsert_local", "who", "映射後數據", "INSERT/UPDATE 完成（冪等）"),
+                ("verify_count", "how much", "表名", "新增/更新行數"),
+                ("report", "when", "全部結果", "sync 報告"),
             ],
             "migrate_cutover": [
-                ("backup_table", "what", "表名 -> 備份完成"),
-                ("create_new_table", "where", "新 DDL -> 新表建立"),
-                ("copy_rows", "how", "舊表 -> 新表 -> 複製行數"),
-                ("verify_rowcount", "how much", "新舊表 -> 行數對比（零損失）"),
-                ("swap_table", "who", "新表名 -> RENAME 完成"),
-                ("verify_foreign_keys", "why", "表名 -> foreign_key_check 乾淨"),
-                ("report", "when", "全部結果 -> cutover 報告"),
+                ("backup_table", "what", "表名", "備份完成"),
+                ("create_new_table", "where", "新 DDL", "新表建立"),
+                ("copy_rows", "how", "舊表 -> 新表", "複製行數"),
+                ("verify_rowcount", "how much", "新舊表", "行數對比（零損失）"),
+                ("swap_table", "who", "新表名", "RENAME 完成"),
+                ("verify_foreign_keys", "why", "表名", "foreign_key_check 乾淨"),
+                ("report", "when", "全部結果", "cutover 報告"),
             ],
             "migrate_other": [
-                ("inspect", "what", "描述 -> 現狀"),
-                ("action", "how", "輸入 -> 輸出"),
-                ("verify", "how much", "預期 -> 實際"),
-                ("report", "when", "全部結果 -> 報告"),
+                ("inspect", "what", "描述", "現狀"),
+                ("action", "how", "輸入", "輸出"),
+                ("verify", "how much", "預期", "實際"),
+                ("report", "when", "全部結果", "報告"),
             ],
         }
-        # condition：migration（migrate_* 全部共享一個 condition，5W2H 7 維度）
-        self.conn.execute(
-            "INSERT INTO condition (meta)"
-            " SELECT 'migration' WHERE NOT EXISTS"
-            " (SELECT 1 FROM condition WHERE meta = 'migration')")
-        crow = self.conn.execute(
-            "SELECT id FROM condition WHERE meta = 'migration'").fetchone()
-        if not crow:
-            return
-        cid = crow["id"]
         exp_true = self.conn.execute(
             "SELECT id FROM expected WHERE boolean_id = 1"
             " ORDER BY id LIMIT 1").fetchone()
@@ -811,6 +802,19 @@ class SqlStore:
         op_id = op_eq["id"] if op_eq else None
         if not exp_id or not op_id:
             return
+        # 清理舊版：migrate_* steps 指住共享 condition「migration」-> 刪，改用
+        # 每個 action 一個 condition（1 action = 1 condition，2026-10-28 用戶修正）
+        shared = self.conn.execute(
+            "SELECT id FROM condition WHERE meta = 'migration'").fetchone()
+        if shared:
+            self.conn.execute(
+                "DELETE FROM step WHERE flow_id IN ("
+                "  SELECT id FROM flow WHERE flow_name LIKE 'migrate_%')"
+                " AND question_id IN ("
+                "  SELECT q.id FROM question q"
+                "  JOIN condition c ON c.id = q.condition_id"
+                "  WHERE c.id = ?)", (shared["id"],))
+            self.conn.commit()
         for fname, steps in flows.items():
             # flow
             self.conn.execute(
@@ -823,18 +827,27 @@ class SqlStore:
             if not frow:
                 continue
             fid = frow["id"]
-            # step：每步一個 question（5W2H 維度）
-            for seq, (action, w5name, io) in enumerate(steps, start=1):
+            # step：每步一個 condition（1 action = 1 condition）+ action/input/output 落表
+            for seq, (action, w5name, inp, out) in enumerate(steps, start=1):
                 w5row = self.conn.execute(
                     'SELECT id FROM "5W2H" WHERE meta = ?', (w5name,)).fetchone()
                 if not w5row:
                     continue
                 w5 = w5row["id"]
-                has = self.conn.execute(
-                    "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
-                    (fid, seq)).fetchone()
-                if has:
+                # condition meta = f"{fname}:{action}"（每個 action 一個 condition）
+                cmeta = f"{fname}:{action}"
+                self.conn.execute(
+                    "INSERT INTO condition (meta)"
+                    " SELECT ? WHERE NOT EXISTS"
+                    " (SELECT 1 FROM condition WHERE meta = ?)",
+                    (cmeta, cmeta))
+                crow = self.conn.execute(
+                    "SELECT id FROM condition WHERE meta = ?",
+                    (cmeta,)).fetchone()
+                if not crow:
                     continue
+                cid = crow["id"]
+                # question（each condition × 5w2h × expected）
                 qrow = self.conn.execute(
                     "SELECT id FROM question WHERE condition_id = ?"
                     ' AND "5w2h_id" = ? AND expected_id = ?',
@@ -858,13 +871,25 @@ class SqlStore:
                         qid = qr["id"] if qr else None
                 if not qid:
                     continue
+                # step（action/input/output 落表）
+                has = self.conn.execute(
+                    "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
+                    (fid, seq)).fetchone()
+                if has:
+                    self.conn.execute(
+                        "UPDATE step SET action = ?, input_desc = ?,"
+                        "  output_desc = ? WHERE flow_id = ? AND seq_id = ?",
+                        (action, inp, out, fid, seq))
+                    continue
                 self.conn.execute(
-                    "INSERT INTO step (flow_id, question_id, seq_id)"
-                    " SELECT ?, ?, ? WHERE NOT EXISTS"
+                    "INSERT INTO step (flow_id, question_id, seq_id,"
+                    "  action, input_desc, output_desc)"
+                    " SELECT ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
                     " (SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?)",
-                    (fid, qid, seq, fid, seq))
+                    (fid, qid, seq, action, inp, out, fid, seq))
         self.conn.commit()
-        print("[migrate] 5 條 migrate_* flow 入 terminology 就緒")
+        print("[migrate] 5 條 migrate_* flow 入 terminology 就緒"
+              "（1 action = 1 condition，表話事）")
 
     def _seed_step_input(self):
         """遷移（幂等）：step_input seed（2026-10-28 用戶設計）
@@ -1844,6 +1869,22 @@ class SqlStore:
                 (r["id"], r["flow_id"], r["question_id"], r["seq_id"],
                  r.get("is_active", 1), r.get("created_at"),
                  r.get("updated_at") or r.get("created_at")))
+        self.conn.commit()
+
+    def _migrate_step_action_columns(self):
+        """遷移（幂等）：step 加 action / input_desc / output_desc 欄（2026-10-28）
+
+        用戶：「table is main for setting」—— flow/step 嘅動作定義要落表，
+        唔可以淨係喺 coding。呢三欄就係表話事嘅動作定義。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('step')")}
+        if "action" not in cols:
+            self.conn.execute("ALTER TABLE step ADD COLUMN action TEXT")
+        if "input_desc" not in cols:
+            self.conn.execute("ALTER TABLE step ADD COLUMN input_desc TEXT")
+        if "output_desc" not in cols:
+            self.conn.execute("ALTER TABLE step ADD COLUMN output_desc TEXT")
         self.conn.commit()
 
     def _migrate_run_answer_id(self):
