@@ -60,7 +60,7 @@ def _get_resource_id(resource_name, identity_id=None):
     """透過 resource module 嘅 API 攞數字 resource_id
 
     唔會喺 connection 自己編號 —— 統一由 resource.db 管。
-    2026-10-26：resource module 已 drop -> 返回 None（等重建）。
+    2026-10-28：resource module 未重建（空殼）-> 返回 None（等重建）。
     """
     try:
         from resource import Resource

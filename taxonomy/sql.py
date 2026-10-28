@@ -568,13 +568,16 @@ class SqlStore:
     def sync_items_from_registry(self):
         """由 resource.db registry 匯入缺少嘅 module 分類項目。
 
-        2026-10-26：resource module 已 drop -> 回報未重建，唔爆。
+        2026-10-28：resource module 存在但未重建（空殼）-> 回報未重建，唔爆。
         """
         try:
             from resource import Resource
         except ImportError:
             return {"added": 0,
-                    "error": "resource module 已 drop（2026-10-26），待重建"}
+                    "error": "resource module 未重建（2026-10-28：空殼，功能未恢復）"}
+        if not hasattr(Resource, "list_registries"):
+            return {"added": 0,
+                    "error": "resource module 未重建（2026-10-28：冇 list_registries 方法）"}
 
         res = Resource()
         try:

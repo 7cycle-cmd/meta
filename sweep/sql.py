@@ -51,7 +51,7 @@ class SqlStore:
         #   target.resource_type_id 指向 resource.db type.id
         #   resource.db type 由 resource module 管理（白名單 + description）
         #   呢度 ATTACH resource.db 嚟 JOIN / 查 type
-        # 2026-10-26：resource module 已 drop -> 唔 ATTACH（避免自動建空檔）
+        # 2026-10-28：resource module 未重建（空殼）-> 唔 ATTACH（避免自動建空檔）
         import os as _os
         _RES_DB = r"C:\projects\meta\resource\resource.db"
         self._res_attached = False
@@ -392,7 +392,7 @@ class SqlStore:
     def resource_types(self):
         """列出資源類型字典（唯一權威 = resource.db type 表）
 
-        2026-10-26：resource module 已 drop -> 空清單（等重建）。
+        2026-10-28：resource module 未重建（空殼）-> 空清單（等重建）。
         """
         if not getattr(self, "_res_attached", False):
             return []
@@ -408,7 +408,7 @@ class SqlStore:
         # resource_type 已移除：改為查 resource.db type（唯一權威）
         if table == "resource_type":
             if not getattr(self, "_res_attached", False):
-                return None  # resource module 已 drop（2026-10-26）
+                return None  # resource module 未重建（2026-10-28）
             r = self.conn.execute(
                 "SELECT id FROM resdb.type WHERE type = ?", (meta,)).fetchone()
             return r["id"] if r else None
@@ -447,7 +447,7 @@ class SqlStore:
                    LEFT JOIN physical_type pt ON pt.id = t.physical_type_id
                    ORDER BY t.id""")]
         else:
-            # resource module 已 drop（2026-10-26）-> 冇 resource_type JOIN
+            # resource module 未重建（2026-10-28）-> 冇 resource_type JOIN
             rows = [dict(r) for r in self.conn.execute(
                 """SELECT t.id, t.resource_id, t.identity_id,
                           s.meta AS status, NULL AS resource_type, pt.meta AS physical_type,

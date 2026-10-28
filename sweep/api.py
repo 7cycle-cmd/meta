@@ -922,7 +922,11 @@ class Sweep:
             from resource import Resource
         except ImportError:
             return {"verified": False, "deleted": 0,
-                    "error": "resource module 已 drop（2026-10-26），待重建"}
+                    "error": "resource module 未重建（2026-10-28：空殼，功能未恢復）"}
+        # 2026-10-28：resource.api 得空殼（未重建）—— 檢查有冇 unregister
+        if not hasattr(Resource, "unregister"):
+            return {"verified": False, "deleted": 0,
+                    "error": "resource module 未重建（2026-10-28：冇 unregister 方法）"}
         if not metas and not meta_like:
             return {"verified": False, "error": "要指定 metas 或 meta_like",
                     "deleted": 0}

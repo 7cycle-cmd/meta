@@ -157,7 +157,7 @@ class SqlStore:
     # ---------- 查詢 ----------
     def connections(self, active_only=True):
         # ATTACH resource.db 攞資源名（connection_registry.resource_id = resource.db registry.id）
-        # 2026-10-26：resource module 已 drop -> 冇 registry JOIN（sender/receiver 用 id）
+        # 2026-10-28：resource module 未重建（空殼）-> 冇 registry JOIN（sender/receiver 用 id）
         import os
         if not os.path.exists(r"C:\projects\meta\resource\resource.db"):
             sql = """SELECT c.id,
@@ -229,7 +229,7 @@ class SqlStore:
         """
         import os
         if not os.path.exists(r"C:\projects\meta\resource\resource.db"):
-            # resource module 已 drop（2026-10-26）-> 冇 receiver_meta
+            # resource module 未重建（2026-10-28）-> 冇 receiver_meta
             return [dict(r) for r in self.conn.execute(
                 """SELECT c.id AS connection_id,
                            r.resource_id AS receiver_resource_id,
