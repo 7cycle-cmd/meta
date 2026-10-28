@@ -25,6 +25,7 @@ class SqlStore:
         self.conn.execute(PROVIDER_TABLE_DDL)
         self.conn.execute(API_TYPE_DDL)
         self.conn.execute(API_DDL)
+        self.conn.execute(API_PROOF_DDL)
         self.conn.execute(FLOW_DDL)
         self.conn.execute(SEQ_DDL)
         self.conn.execute(STEP_DDL)
@@ -48,7 +49,149 @@ class SqlStore:
         self._migrate_word_source()
         self._seed_apis()
         self._seed_api_refs()
+        self._migrate_api_proven()   # 2026-10-28：api.proven 欄
         self.conn.commit()
+
+    def _migrate_api_proven(self):
+        """遷移（幂等）：api 加 proven 欄（2026-10-28 用戶要求）
+
+        proven = 0（pending）—— 之前 seed 嘅 api 全部未證明，
+        要 record_api_proof 之後 prove_api 先至 proven=1。
+        唔可以自動填 1（要真實證據）。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('api')")}
+        if "proven" not in cols:
+            self.conn.execute(
+                "ALTER TABLE api ADD COLUMN proven INTEGER NOT NULL DEFAULT 0")
+            # 有 API_PROOF 證據嘅行 -> proven=1（冪等）
+            self.conn.execute(
+                "UPDATE api SET proven = 1 WHERE id IN"
+                " (SELECT DISTINCT api_id FROM api_proof)")
+            self.conn.commit()
+            print("[migrate] api + proven 欄（預設 0 = pending proof）")
+        # api_proof 表加 is_pass / module_version（2026-10-28）
+        pcols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('api_proof')")}
+        if "is_pass" not in pcols:
+            self.conn.execute(
+                "ALTER TABLE api_proof ADD COLUMN is_pass INTEGER"
+                " NOT NULL DEFAULT 1")
+            # 回填：http_status 200-299 -> pass
+            self.conn.execute(
+                "UPDATE api_proof SET is_pass = 1"
+                " WHERE http_status BETWEEN 200 AND 299")
+            self.conn.execute(
+                "UPDATE api_proof SET is_pass = 0"
+                " WHERE http_status < 200 OR http_status >= 300")
+            self.conn.commit()
+            print("[migrate] api_proof + is_pass 欄（回填完成）")
+        if "module_version" not in pcols:
+            self.conn.execute(
+                "ALTER TABLE api_proof ADD COLUMN module_version TEXT")
+            self.conn.commit()
+            print("[migrate] api_proof + module_version 欄")
+
+    # ---------- api_proof（2026-10-28：真實執行證據先可以註冊 api）----------
+    def api_by_path_method(self, path, method):
+        """搵 api.id（path + method 配對，冪等）"""
+        tr = self.conn.execute(
+            "SELECT id FROM api_type WHERE value = ?", (method,)).fetchone()
+        if not tr:
+            return None
+        r = self.conn.execute(
+            "SELECT id FROM api WHERE api = ? AND api_type_id = ?",
+            (path, tr["id"])).fetchone()
+        return r["id"] if r else None
+
+    def record_api_proof(self, path, method, http_status, is_pass=None,
+                         proof_type="live_http", ref_id=None,
+                         module_version=None, x_srv_trace=None):
+        """記錄一條 api 嘅真實執行證據（pass + fail 都要記）
+
+        path/method  = 執行嘅真實 API
+        http_status  = HTTP 結果（200-299 = pass）
+        is_pass      = None -> 自動由 http_status 計（200-299=1 其他=0）
+        proof_type   = postman_mock_exec / live_http / ...
+        ref_id       = 證據來源（postman_mock_exec.id / postman_sync.id）
+        module_version = 邊個 module version 證明（例如 source 1.0.0）
+
+        pass 證據存在 -> api.proven=1（自動）
+        fail 證據只記錄（唔影響 proven）
+        """
+        api_id = self.api_by_path_method(path, method)
+        if api_id is None:
+            raise ValueError(
+                f"api '{method} {path}' 未註冊 —— 先 add_api 先可以記錄證據")
+        if is_pass is None:
+            is_pass = 1 if 200 <= http_status < 300 else 0
+        if ref_id is not None:
+            # 冪等：同一 (api_id, proof_type, ref_id) 唔重複（例如 postman exec）
+            exists = self.conn.execute(
+                "SELECT id FROM api_proof WHERE api_id = ?"
+                " AND proof_type = ? AND ref_id = ?",
+                (api_id, proof_type, ref_id)).fetchone()
+            if exists:
+                pid = exists["id"]
+                self.conn.execute(
+                    "UPDATE api_proof SET http_status = ?, is_pass = ?,"
+                    " module_version = ? WHERE id = ?",
+                    (http_status, is_pass, module_version, pid))
+            else:
+                cur = self.conn.execute(
+                    "INSERT INTO api_proof"
+                    " (api_id, proof_type, ref_id, method, path, http_status,"
+                    "  is_pass, module_version, x_srv_trace)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (api_id, proof_type, ref_id, method, path, http_status,
+                     is_pass, module_version, x_srv_trace))
+                pid = cur.lastrowid
+        else:
+            # 冇 ref_id（live_http 每次執行 = 新證據，全部保留）
+            cur = self.conn.execute(
+                "INSERT INTO api_proof"
+                " (api_id, proof_type, ref_id, method, path, http_status,"
+                "  is_pass, module_version, x_srv_trace)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (api_id, proof_type, None, method, path, http_status,
+                 is_pass, module_version, x_srv_trace))
+            pid = cur.lastrowid
+        # 有 PASS 證據 -> proven=1（fail 唔會）
+        if is_pass == 1:
+            self.conn.execute(
+                "UPDATE api SET proven = 1 WHERE id = ?", (api_id,))
+        self.conn.commit()
+        return pid
+
+    def api_proofs(self, api_id=None):
+        """列出執行證據（可按 api 篩選）"""
+        sql = ("SELECT ap.*, a.api, t.value AS api_type"
+               " FROM api_proof ap"
+               " LEFT JOIN api a ON a.id = ap.api_id"
+               " LEFT JOIN api_type t ON t.id = a.api_type_id")
+        args = ()
+        if api_id is not None:
+            sql += " WHERE ap.api_id = ?"
+            args = (api_id,)
+        sql += " ORDER BY ap.id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def apis_with_proof(self, proven_only=False):
+        """列出 API 連證據狀態（proven 1/0 + 幾多 pass/fail）"""
+        sql = ("SELECT a.id, a.api, t.value AS api_type,"
+               " a.flow_id, f.flow_name, a.description, a.status_id,"
+               " a.proven, a.is_active, a.created_at,"
+               " (SELECT COUNT(*) FROM api_proof ap WHERE ap.api_id = a.id"
+               "  AND ap.is_pass = 1) AS pass_count,"
+               " (SELECT COUNT(*) FROM api_proof ap WHERE ap.api_id = a.id"
+               "  AND ap.is_pass = 0) AS fail_count"
+               " FROM api a"
+               " LEFT JOIN api_type t ON t.id = a.api_type_id"
+               " LEFT JOIN flow f ON f.id = a.flow_id")
+        if proven_only:
+            sql += " WHERE a.proven = 1"
+        sql += " ORDER BY t.id, a.api"
+        return [dict(r) for r in self.conn.execute(sql)]
 
     def _seed_api_refs(self):
         """seed api 表參考（value_id + status_id + flow_id）—— 唔可以 NULL

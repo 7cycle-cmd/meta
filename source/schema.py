@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS api_type (
 # flow_id     -> 呢條 API 屬於邊條 flow（跨 module：query/question 嘅 flow）
 # value_id    -> 呢條 API 消耗邊種 value（跨 module：value 表）
 # status_id   -> status.id（active / deprecated...）
+# 2026-10-28（用戶要求）：有執行證據先可以註冊做 api。
+#   proven = 1 先算 registered（有 api_proof 真實執行證據）；
+#   0 = 只係定義（pending proof）。
+#   證據可由 Postman（postman_mock_exec / server log）或任何真實執行
+#   （live http 200）產生 —— postman 係第三方工具幫手證明，唔係一切。
 API_DDL = """
 CREATE TABLE IF NOT EXISTS api (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,9 +63,39 @@ CREATE TABLE IF NOT EXISTS api (
     value_id    INTEGER,                    -- value.id（呢條 API 消耗邊種 value）
     description TEXT,                       -- 描述
     status_id   INTEGER,                    -- status.id（1=active 2=deprecated）
+    proven      INTEGER NOT NULL DEFAULT 0, -- 有冇真實執行證據（1=registered 0=pending）
     is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     UNIQUE (api, api_type_id)
+);
+"""
+
+# api_proof 表：api 嘅真實執行證據（2026-10-28 用戶要求）
+# 一條 api 想註冊（proven=1），一定要有至少一條 **PASS** 證據。
+# pass 同 fail 都要記錄（is_pass 0/1）—— fail 都係證據（邊次唔得）；
+# 但只有 is_pass=1 先可以令 api proven=1。
+# proof_type   = postman_mock_exec（Postman 平台執行）/ live_http（真實 HTTP）
+# ref_id       = 證據來源記錄 id（postman_mock_exec.id / postman_sync.id）
+# method/path  = 執行時嘅 method + path（同 api 比對）
+# http_status  = 執行結果（200-299 = pass）
+# is_pass      = 0/1（pass 定 fail）
+# module_version = 邊個 module version 證明（例如 source 1.0.0）
+# x_srv_trace  = Postman 平台執行 ID（唔偽造得；live_http 可 NULL）
+# captured_at  = 執行時間
+API_PROOF_DDL = """
+CREATE TABLE IF NOT EXISTS api_proof (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_id         INTEGER NOT NULL,           -- api.id
+    proof_type     TEXT    NOT NULL,           -- postman_mock_exec / live_http / ...
+    ref_id         INTEGER,                    -- 證據來源記錄 id
+    method         TEXT    NOT NULL,           -- GET / POST ...
+    path           TEXT    NOT NULL,           -- 執行嘅真實 path
+    http_status    INTEGER NOT NULL,           -- 200-299 = pass
+    is_pass        INTEGER NOT NULL DEFAULT 1, -- 0/1（pass 定 fail，都要記）
+    module_version TEXT,                       -- module version（例如 source 1.0.0）
+    x_srv_trace    TEXT,                       -- Postman 平台執行 ID（如有）
+    captured_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (api_id, proof_type, ref_id)
 );
 """
 
@@ -313,6 +348,7 @@ CREATE TABLE IF NOT EXISTS postman_run (
 __all__ = ['SOURCE_TABLE_DDL', 'PROVIDER_TABLE_DDL',
            'API_TYPE_DDL', 'API_DDL', 'FLOW_DDL', 'SEQ_DDL', 'STEP_DDL',
            'STATUS_DDL', 'RUN_DDL', 'RESULT_DDL', 'SOURCE_PROOF_DDL',
-           'VALUE_DDL', 'POSTMAN_SYNC_DDL', 'POSTMAN_MOCK_DDL',
+           'VALUE_DDL', 'API_PROOF_DDL',
+           'POSTMAN_SYNC_DDL', 'POSTMAN_MOCK_DDL',
            'POSTMAN_MOCK_SERVER_DDL', 'POSTMAN_MOCK_EXEC_DDL',
            'POSTMAN_RUN_DDL']

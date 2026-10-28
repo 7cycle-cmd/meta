@@ -74,8 +74,13 @@ class SourceApiHandler(BaseHTTPRequestHandler):
         pass  # 靜音，避免刷屏
 
     def _path_parts(self):
-        """將 path 拆做 parts（例如 /sources/3 -> ["sources", "3"]）"""
-        return [p for p in self.path.split("/") if p]
+        """將 path 拆做 parts（例如 /sources/3 -> ["sources", "3"]）
+
+        2026-10-28 修正：先剝離 query string（?token=...），
+        否則 /sources?token=x 拆出嚟係 ["sources?token=x"] 永遠 404。
+        """
+        raw = self.path.split("?", 1)[0]
+        return [p for p in raw.split("/") if p]
 
     def _qs(self):
         """拆 query string -> dict（首個值）"""
@@ -161,8 +166,38 @@ class SourceApiHandler(BaseHTTPRequestHandler):
             elif parts[0] == "providers" and len(parts) == 2:
                 r = s.get_provider(int(parts[1]))
                 self._send(200, r if r else {"error": "唔存在"})
+            elif parts[0] == "charsets":
+                # 2026-10-28：真實數據來自 character module
+                from character import Character as _Ch
+                _c = _Ch()
+                try:
+                    self._send(200, {"charsets": {
+                        "symbols": sorted(_c.symbols()),
+                        "letters": sorted(_c.letters()),
+                        "ints": sorted(_c.ints()),
+                    }})
+                finally:
+                    _c.close()
+            elif parts[0] == "data-formats":
+                # 2026-10-28：數據格式 = character 符號集（暫代理）
+                from character import Character as _Ch
+                _c = _Ch()
+                try:
+                    self._send(200, {"data_formats": sorted(_c.symbols())})
+                finally:
+                    _c.close()
+            elif parts[0] == "languages":
+                # 2026-10-28：真實數據來自 language module
+                from language import Language as _L
+                _l = _L()
+                try:
+                    self._send(200, {"languages": _l.list_languages()})
+                finally:
+                    _l.close()
             elif parts[0] == "levels":
-                self._send(200, {"levels": s.list_authority_levels()})
+                # 2026-10-28：authority_level 表已由 terminology 移除，
+                # /levels 唔再 serve（誠實：冇資料來源就唔好扮有）
+                self._send(404, {"error": "authority_level 已移除（冇 /levels）"})
             elif parts[0] == "industries":
                 self._send(200, {"industries": s.list_industries()})
             else:
@@ -291,11 +326,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), SourceApiHandler)
     server.daemon_threads = True
-    print(f"✅ source API 伺服器起動: http://127.0.0.1:{args.port}")
+    print(f"[OK] source API server started: http://127.0.0.1:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n已停止")
+        print("\nstopped")
         server.server_close()
 
 if __name__ == "__main__":
