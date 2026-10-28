@@ -151,6 +151,10 @@ class Terminology:
         """列出驗證鏈"""
         return self.store.flows(active_only)
 
+    def flow_completeness(self, flow_name=None):
+        """測量：每條 flow 喺 5W2H 7 維度嘅完整度（2026-10-28 用戶設計）"""
+        return self.store.flow_completeness(flow_name)
+
     # ---------- flow_branch / next_flow（分支決策，0 hardcode） ----------
 
     def add_branch_rule(self, flow_name, condition_meta, status_id,

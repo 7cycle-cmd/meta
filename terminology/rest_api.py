@@ -187,6 +187,10 @@ class ApiHandler(BaseHTTPRequestHandler):
                     name = qs.get("flow", "spec")
                     self._send(200, {"flow": name,
                                      "steps": t.flow_steps(name)})
+                elif path == "/flow-completeness":
+                    # 測量：每 flow 5W2H 7 維度完整度（2026-10-28 用戶設計）
+                    name = qs.get("flow")
+                    self._send(200, t.flow_completeness(name))
                 elif path == "/run":
                     name = qs.get("flow", "spec")
                     value = qs.get("value")

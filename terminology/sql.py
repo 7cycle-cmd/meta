@@ -80,6 +80,7 @@ class SqlStore:
             INDUSTRY_DDL, EVIDENCE_DDL,
             REGISTRY_DDL,
             CONDITION_DDL, W5H2_DDL, RUN_DDL, FLOW_DDL, STEP_DDL,
+            STEP_INPUT_DDL,
             FLOW_BRANCH_DDL, NEXT_FLOW_DDL,
             EXPECTED_DDL, OPERATOR_DDL, ANSWER_DDL, BOOLEAN_DDL,
             QUESTION_DDL, SEQ_DDL, STATUS_DDL,
@@ -111,6 +112,7 @@ class SqlStore:
         self._migrate_run_role_id()
         self._migrate_proof_flows()
         self._migrate_split_flow()
+        self._seed_step_input()
         self._migrate_source_register_defaults()
         self._migrate_value_taxonomy_id()
         self._seed()
@@ -284,13 +286,13 @@ class SqlStore:
         """遷移（幂等）：split_value flow + 7 步（5W2H，2026-10-28 用戶要求）
 
         flow：split_value —— 值拆分嘅證明鏈
-        7 步（5W2H）：
+        7 步（5W2H 完整 7 維度，缺一不可）：
             what      -> 拆咩（value_id）
             where     -> 邊個 db（value.db）
-            where     -> 邊張表（split_total / split_value）
             when      -> 幾時拆（created_at）
-            who       -> 邊個拆（taxonomy_id）
-            why       -> 點解拆（permit_id 授權）
+            who       -> 邊個拆（identity）
+            why       -> 點解拆（lineage / permit）
+            how       -> 點拆（taxonomy × schema × tool + rest_api）
             how much  -> 拆幾多份（split_total）
         冪等：flow_name UNIQUE + step UNIQUE(flow_id, seq_id)
         """
@@ -316,12 +318,10 @@ class SqlStore:
         if not exp_id or not op_id:
             return
         # 3. 7 步定義（condition_id 用 split_value condition；5w2h_id 1-7）
-        #    condition：用 source 類（有 split_value condition 就啱用）
         crow = self.conn.execute(
             "SELECT id FROM condition WHERE meta = 'split_value'"
         ).fetchone()
         if not crow:
-            # 冇 split_value condition -> 建一個
             cur = self.conn.execute(
                 "INSERT INTO condition (meta)"
                 " SELECT 'split_value' WHERE NOT EXISTS"
@@ -332,9 +332,20 @@ class SqlStore:
         if not crow:
             return
         cid = crow["id"]
-        # 5W2H id 1-7（what/where/when/who/why/how/how much）
-        w_ids = [1, 2, 2, 3, 4, 5, 7]  # where 用 2 次（db + 表）
-        # 4. 建 step（每步一個 question：condition × 5w2h × expected）
+        # 5W2H id 1-7：what/where/when/who/why/how/how much（完整 7 維度）
+        # 修正（2026-10-28 用戶目測）：舊版 [1,2,2,3,4,5,7] 缺 how(6) -> 改完整
+        w_ids = [1, 2, 3, 4, 5, 6, 7]
+        # 4. 修復（冪等閘）：只得「維度唔齊」先刪舊 steps 重建
+        #    （舊 bug：dimension 缺 how(6) -> 直接重建；齊 7 維就唔郁）
+        dim_covered = {x[0] for x in self.conn.execute(
+            "SELECT DISTINCT q.\"5w2h_id\" FROM step s"
+            " JOIN question q ON q.id = s.question_id"
+            " WHERE s.flow_id = ? AND s.is_active = 1", (fid,))}
+        if dim_covered and dim_covered != set(w_ids):
+            self.conn.execute("DELETE FROM step WHERE flow_id = ?", (fid,))
+            self.conn.commit()
+            print("[migrate] split_value 舊 step 維度唔齊 -> 重建")
+        # 5. 建 step（每步一個 question：condition × 5w2h × expected）
         for seq, w5 in enumerate(w_ids, start=1):
             has = self.conn.execute(
                 "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
@@ -371,6 +382,136 @@ class SqlStore:
                 (fid, qid, seq, fid, seq))
         self.conn.commit()
         print("[migrate] split_value flow + 7 步就緒")
+
+    def _seed_step_input(self):
+        """遷移（幂等）：step_input seed（2026-10-28 用戶設計）
+
+        每個 condition 期望有 7 行 step_input（5W2H 全維度）：
+            what      -> value.id
+            where     -> (module db 位置)
+            when      -> created_at / permit
+            who       -> identity.id
+            why       -> lineage.id
+            how       -> taxonomy/schema/tool id
+            how much  -> split_total.id
+        source_table / source_column = 呢個維度個 id 喺邊度攞（DB driven）。
+        冪等：UNIQUE(condition_id, "5w2h_id")。
+        """
+        # 確保表存在（全新 DB：建表喺 _attach_value_db 之後先執行）
+        self.conn.execute(STEP_INPUT_DDL)
+        rows = [
+            (1, "value", "id"),
+            (2, "module", "db"),
+            (3, "permit", "id"),
+            (4, "identity", "id"),
+            (5, "lineage", "id"),
+            (6, "taxonomy", "id"),
+            (7, "split_total", "id"),
+        ]
+        for w5, src, col in rows:
+            # 每 condition（例如 split_value）都要有 7 行
+            for cid in [r["id"] for r in self.conn.execute(
+                    "SELECT id FROM condition WHERE is_active = 1")]:
+                self.conn.execute(
+                    "INSERT INTO step_input (condition_id, \"5w2h_id\","
+                    " source_table, source_column)"
+                    " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                    " (SELECT 1 FROM step_input WHERE condition_id = ?"
+                    '  AND "5w2h_id" = ?)',
+                    (cid, w5, src, col, cid, w5))
+        self.conn.commit()
+        print("[migrate] step_input 7 維度 seed 就緒")
+
+    def flow_completeness(self, flow_name=None):
+        """測量：每條 flow 喺 5W2H 7 維度嘅完整度（2026-10-28 用戶設計）
+
+        概念：flow = 6 維度（what/who/why/when/where/how）× how much
+              = 12 格 × (期望/實際 yes-no) = 24 格
+        度法：實際 step 用咗邊啲 5w2h_id ⨯ step_input 期望有邊啲
+
+        返回：
+        {"flows": [{"flow_id", "flow", "step_count", "input_rows",
+                     "missing": [5w2h 名...], "wrong_define": [5w2h 名...],
+                     "score_n"/"score_d", "score_pct"}],
+         "dims": {"total": 7, "used": n, "missing": [...], "wrong": [...]}}
+        """
+        q = ("SELECT f.id AS fid, f.flow_name,"
+             "  COUNT(DISTINCT s.id) AS step_count,"
+             "  COUNT(DISTINCT q.\"5w2h_id\") AS dims_used,"
+             "  COUNT(DISTINCT si.id) AS input_rows"
+             " FROM flow f"
+             " LEFT JOIN step s ON s.flow_id = f.id AND s.is_active = 1"
+             " LEFT JOIN question q ON q.id = s.question_id"
+             " LEFT JOIN step_input si ON si.condition_id = q.condition_id"
+             " WHERE f.is_active = 1")
+        args = []
+        if flow_name:
+            q += " AND f.flow_name = ?"
+            args.append(flow_name)
+        q += " GROUP BY f.id ORDER BY f.id"
+        rows = [dict(r) for r in self.conn.execute(q, args)]
+
+        # 7 維度名（5W2H id 1-7）
+        w = {r["id"]: r["meta"] for r in self.conn.execute(
+            'SELECT id, meta FROM "5W2H"')}
+        dims = [str(x) for x in range(1, 8)]
+
+        out = []
+        for r in rows:
+            fid = r["fid"]
+            # 實際 flow 用咗邊啲維度（由 step -> question -> 5w2h_id）
+            used = {x[0] for x in self.conn.execute(
+                "SELECT DISTINCT q.\"5w2h_id\" FROM step s"
+                " JOIN question q ON q.id = s.question_id"
+                " WHERE s.flow_id = ? AND s.is_active = 1", (fid,))}
+            # step_input 期望有邊啲（condition -> step_input）
+            expected = {x[0] for x in self.conn.execute(
+                "SELECT DISTINCT si.\"5w2h_id\" FROM step s"
+                " JOIN question q ON q.id = s.question_id"
+                " JOIN step_input si ON si.condition_id = q.condition_id"
+                " WHERE s.flow_id = ? AND s.is_active = 1", (fid,))}
+            missing = sorted(expected - used, key=int)   # 期望有但 flow 冇
+            wrong = sorted(used - expected, key=int)    # flow 有用但 step_input 冇
+            n = len(used & expected)
+            d = len(expected) or 1
+            out.append({
+                "flow_id": fid,
+                "flow": r["flow_name"],
+                "step_count": r["step_count"] or 0,
+                "input_rows": r["input_rows"] or 0,
+                "missing": [w.get(int(x), x) for x in missing],
+                "wrong_define": [w.get(int(x), x) for x in wrong],
+                "score_n": n, "score_d": d,
+                "score_pct": round(100.0 * n / d, 1),
+            })
+        dims_used = {int(x) for x in
+                     [d for r in rows for d in r.get("missing", [])]}
+        # dims_used 嘅計法要由 rows 度攞（上面 missing 已係名）——
+        # 呢度直接重掃一次，確保總計準確
+        all_used = set()
+        all_exp = set()
+        for r in self.conn.execute("SELECT id FROM flow WHERE is_active = 1"):
+            fid = r["id"]
+            all_used |= {x[0] for x in self.conn.execute(
+                "SELECT DISTINCT q.\"5w2h_id\" FROM step s"
+                " JOIN question q ON q.id = s.question_id"
+                " WHERE s.flow_id = ? AND s.is_active = 1", (fid,))}
+            all_exp |= {x[0] for x in self.conn.execute(
+                "SELECT DISTINCT si.\"5w2h_id\" FROM step s"
+                " JOIN question q ON q.id = s.question_id"
+                " JOIN step_input si ON si.condition_id = q.condition_id"
+                " WHERE s.flow_id = ? AND s.is_active = 1", (fid,))}
+        return {
+            "flows": out,
+            "dims": {
+                "total": 7,
+                "used": len(all_used),
+                "missing": sorted(
+                    [w.get(int(x), x) for x in (all_exp - all_used)], key=str),
+                "wrong": sorted(
+                    [w.get(int(x), x) for x in (all_used - all_exp)], key=str),
+            },
+        }
 
     def _migrate_word_industry_evidence(self):
         """遷移（幂等）：word_industry -> 通用 evidence 表（2026-10-25）

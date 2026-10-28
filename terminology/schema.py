@@ -123,6 +123,26 @@ CREATE TABLE IF NOT EXISTS step (
 
 # flow_branch 表：每次 run 對每個 condition 嘅實際判斷結果（2026-10-25 用戶要求）
 # runtime 自動寫入（發生過咩 -> 記錄）。唔係規則！
+# step_input 表：condition × 5W2H 7 維度輸入測量（2026-10-28 用戶設計）
+# 目的：量度「呢個 condition 喺 7 個 5W2H 維度入面嘅 input 係咪齊」
+#   source_table / source_column -> 呢個維度嘅 id 由邊張表邊個欄攞
+#   （DB driven：全部可以 by id -> how much = *_id）
+# 完整度測量：每 condition 應有 7 行（5W2H 全維度）；
+#   step_input 有但 flow 冇用 = wrong define；flow 用到但冇 = missing。
+STEP_INPUT_DDL = """
+CREATE TABLE IF NOT EXISTS step_input (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    condition_id  INTEGER NOT NULL,          -- terminology.condition.id
+    "5w2h_id"     INTEGER NOT NULL,          -- "5W2H".id（1-7）
+    source_table  TEXT,                      -- e.g. 'value' / 'permit' / 'identity'
+    source_column TEXT,                      -- e.g. 'id' / 'permit_type'
+    is_active     BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (condition_id, "5w2h_id")
+);
+"""
+
 FLOW_BRANCH_DDL = """
 CREATE TABLE IF NOT EXISTS flow_branch (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,6 +294,7 @@ CREATE TABLE IF NOT EXISTS source_register (
 
 __all__ = ["INDUSTRY_DDL", "EVIDENCE_DDL",
            "CONDITION_DDL", "W5H2_DDL", "VALUE_DDL", "RUN_DDL", "FLOW_DDL", "STEP_DDL",
+           "STEP_INPUT_DDL",
            "FLOW_BRANCH_DDL", "NEXT_FLOW_DDL",
            "EXPECTED_DDL", "OPERATOR_DDL", "ANSWER_DDL", "BOOLEAN_DDL",
            "QUESTION_DDL", "SEQ_DDL", "STATUS_DDL", "REGISTRY_DDL",
