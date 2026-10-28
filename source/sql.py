@@ -54,6 +54,39 @@ class SqlStore:
         # 2026-10-28（用戶要求）：structure_resource 要登記齊全部資源
         # （api/schema/function/tool），唔可以淨係 schema
         self._register_structure_resources()
+        # 2026-10-28（用戶設計）：migration 審計日誌
+        self._record_migration_audit()
+
+    def _record_migration_audit(self):
+        """記錄 source 啟動嘅 migration 審計（migration module，冪等）
+
+        用戶設計（2026-10-28）：migration = module 啟動時改 schema/資料
+        嘅動作記錄。source 而家啟動時做咗：
+            api + proven 欄（schema）
+            api_proof 表（schema）
+            structure_resource 登記（sync）
+        全部經 migration module 記低（taxonomy_id 反查，零 hardcode）。
+        """
+        try:
+            from migration import Migration as _M
+            _m = _M()
+            try:
+                _m.record("source", table="api", migration_type="schema",
+                          description="api 加 proven 欄（0=pending 1=pass 證據）")
+                _m.record("source", table="api_proof",
+                          migration_type="schema",
+                          description="api_proof 表（pass/fail 0/1 證據）")
+                _m.record("source", table="api", migration_type="sync",
+                          description="structure_resource 資源登記（AST）")
+                _m.record("source", table="postman_mock_exec",
+                          migration_type="sync",
+                          description="postman 真實執行證據同步")
+                _m.record("source", table="api_proof", migration_type="sync",
+                          description="postman mock execution 證據寫入")
+            finally:
+                _m.close()
+        except Exception:
+            pass
 
     def _register_structure_resources(self):
         """登記 source 全部資源入 structure_resource（冪等）
