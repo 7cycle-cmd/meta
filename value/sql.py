@@ -137,7 +137,13 @@ class SqlStore:
 
         REST_API_WRITE -> 127.0.0.1:8500/word-proof?value=<value>&token=terminology.api
         -> <value> = split_value 對應嘅值（有 terminology_id = 有權）
+
+        2026-10-28b：同時寫 permit.db（permit = subject × permit × object 權威）
+            subject   = value.split_value.<id>（split_value 類型）
+            permit    = call
+            object    = terminology.<terminology_id>
         """
+        # 1. 本地 terminology 表（保留記錄）
         cur = self.conn.execute(
             "INSERT INTO terminology (terminology_id, split_value_id)"
             " SELECT ?, ? WHERE NOT EXISTS"
@@ -145,6 +151,19 @@ class SqlStore:
             "  WHERE terminology_id = ? AND split_value_id = ?)",
             (terminology_id, split_value_id,
              terminology_id, split_value_id))
+        # 2. permit.db（權威授權）
+        try:
+            from permit import Permit
+            pm = Permit()
+            try:
+                pm.add_permit(
+                    f"value.split_value.{split_value_id}", "split_value",
+                    "call",
+                    f"terminology.{terminology_id}", "terminology")
+            finally:
+                pm.close()
+        except Exception as e:
+            print(f"[value] permit.db 寫入失敗（本地表照寫）: {e}")
         self.conn.commit()
         if cur.rowcount:
             return cur.lastrowid
@@ -170,7 +189,26 @@ class SqlStore:
         return [dict(r) for r in self.conn.execute(sql, args)]
 
     def can_call_terminology(self, split_value_id, terminology_id):
-        """一個拆分值有冇權 call terminology（冪等檢查）"""
+        """一個拆分值有冇權 call terminology（冪等檢查）
+
+        2026-10-28b：permit.db 係權威（subject × permit × object）；
+        本地表 fallback（permit 未寫入時用本地記錄）。
+        """
+        try:
+            from permit import Permit
+            pm = Permit()
+            try:
+                ok = pm.can(
+                    f"value.split_value.{split_value_id}", "split_value",
+                    "call",
+                    f"terminology.{terminology_id}", "terminology")
+                if ok:
+                    return True
+            finally:
+                pm.close()
+        except Exception:
+            pass
+        # fallback：本地 terminology 表
         r = self.conn.execute(
             "SELECT 1 FROM terminology"
             " WHERE split_value_id = ? AND terminology_id = ?"

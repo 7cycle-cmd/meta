@@ -49,12 +49,35 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, {"status": "ok",
                               "module": "guard",
                               "api": "guard.rest_api"})
+        elif path == "/check-permit":
+            # token + permit_type + object + object_type
+            qs = {}
+            if "?" in self.path:
+                for p in self.path.split("?", 1)[1].split("&"):
+                    if "=" in p:
+                        k, val = p.split("=", 1)
+                        qs[k] = val
+            token_id = qs.get("token")
+            permit_type = qs.get("permit_type", "call")
+            object = qs.get("object")
+            object_type = qs.get("object_type")
+            if not token_id or not object or not object_type:
+                self._send(400, {"error": "需要 token + object + object_type"})
+            else:
+                from guard import Guard
+                g = Guard()
+                try:
+                    r = g.check_permit(token_id, permit_type, object,
+                                       object_type)
+                    self._send(200, r)
+                finally:
+                    g.close()
         else:
             self._send(404, {"error": f"唔知 route: {path}"})
 
 
 def main(port=9500):
-    print(f"{module_name} rest_api @ http://127.0.0.1:{port}")
+    print(f"guard rest_api @ http://127.0.0.1:{port}")
     ThreadingHTTPServer(("127.0.0.1", port), _Handler).serve_forever()
 
 
