@@ -18,11 +18,16 @@ class Migration:
         self.store = SqlStore(db_path) if db_path else SqlStore()
 
     def record(self, module_name, table=None, migration_type="schema",
-               description=None, run_id=None, api_id=None, row_id=0):
-        """記錄一次 migration（冪等）"""
+               description=None, run_id=None, api_id=None, row_id=0,
+               value=None, step_values=None, run_flow=True):
+        """記錄一次 migration（冪等）
+
+        value = 提交值（跑 terminology flow；冇 -> description 做值）
+        run_flow = False 就唔跑 flow（內部用）
+        """
         return self.store.record(
             module_name, table, migration_type, description,
-            run_id, api_id, row_id)
+            run_id, api_id, row_id, value, step_values, run_flow)
 
     def logs(self, module_name=None, migration_type=None, limit=100):
         """列出 migration 記錄"""

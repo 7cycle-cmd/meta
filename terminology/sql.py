@@ -385,6 +385,7 @@ class SqlStore:
         self._migrate_run_role_id()
         self._migrate_proof_flows()
         self._migrate_split_flow()
+        self._migrate_migration_flow()
         self._seed_step_input()
         self._migrate_source_register_defaults()
         self._migrate_value_taxonomy_id()
@@ -554,6 +555,84 @@ class SqlStore:
                     (fid, qid, seq, fid, seq))
         self.conn.commit()
         print("[migrate] evidence/proof/verify flow + condition + step 就緒")
+
+    def _migrate_migration_flow(self):
+        """遷移（幂等）：migration_audit flow（2026-10-28 用戶設計）
+
+        run_id = terminology.run —— migration 記錄一定要有真 run：
+            condition = migration（migration 記錄正確性判斷）
+            3 步（5W2H）：
+                what   -> value 存在（提交值）
+                where  -> run 記錄存在（migration_log 有 row）
+                how    -> evidence 產生咗（PASS = 有證據）
+        冪等：flow_name UNIQUE + condition.meta UNIQUE + step UNIQUE。
+        """
+        # 1. condition
+        self.conn.execute(
+            "INSERT INTO condition (meta)"
+            " SELECT 'migration' WHERE NOT EXISTS"
+            " (SELECT 1 FROM condition WHERE meta = 'migration')")
+        # 2. flow
+        self.conn.execute(
+            "INSERT INTO flow (flow_name)"
+            " SELECT 'migration_audit' WHERE NOT EXISTS"
+            " (SELECT 1 FROM flow WHERE flow_name = 'migration_audit')")
+        self.conn.commit()
+        frow = self.conn.execute(
+            "SELECT id FROM flow WHERE flow_name = 'migration_audit'"
+        ).fetchone()
+        crow = self.conn.execute(
+            "SELECT id FROM condition WHERE meta = 'migration'").fetchone()
+        if not frow or not crow:
+            return
+        fid, cid = frow["id"], crow["id"]
+        exp_true = self.conn.execute(
+            "SELECT id FROM expected WHERE boolean_id = 1"
+            " ORDER BY id LIMIT 1").fetchone()
+        exp_id = exp_true["id"] if exp_true else None
+        op_eq = self.conn.execute(
+            "SELECT id FROM operator WHERE meta = '=='"
+            " ORDER BY id LIMIT 1").fetchone()
+        op_id = op_eq["id"] if op_eq else None
+        if not exp_id or not op_id:
+            return
+        # 3. 3 步（what=1 / where=2 / how=6）
+        for seq, w5 in ((1, 1), (2, 2), (3, 6)):
+            has = self.conn.execute(
+                "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
+                (fid, seq)).fetchone()
+            if has:
+                continue
+            qrow = self.conn.execute(
+                "SELECT id FROM question WHERE condition_id = ?"
+                ' AND "5w2h_id" = ? AND expected_id = ?',
+                (cid, w5, exp_id)).fetchone()
+            if qrow:
+                qid = qrow["id"]
+            else:
+                cur = self.conn.execute(
+                    "INSERT INTO question"
+                    " (condition_id, \"5w2h_id\", operator_id, expected_id)"
+                    " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                    " (SELECT 1 FROM question WHERE condition_id = ?"
+                    '  AND "5w2h_id" = ? AND expected_id = ?)',
+                    (cid, w5, op_id, exp_id, cid, w5, exp_id))
+                qid = cur.lastrowid if cur.rowcount else None
+                if qid is None:
+                    qr = self.conn.execute(
+                        "SELECT id FROM question WHERE condition_id = ?"
+                        ' AND "5w2h_id" = ? AND expected_id = ?',
+                        (cid, w5, exp_id)).fetchone()
+                    qid = qr["id"] if qr else None
+            if not qid:
+                continue
+            self.conn.execute(
+                "INSERT INTO step (flow_id, question_id, seq_id)"
+                " SELECT ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?)",
+                (fid, qid, seq, fid, seq))
+        self.conn.commit()
+        print("[migrate] migration_audit flow + condition + step 就緒")
 
     def _migrate_split_flow(self):
         """遷移（幂等）：split_value flow + 7 步（5W2H，2026-10-28 用戶要求）
