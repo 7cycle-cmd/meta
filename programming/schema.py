@@ -393,6 +393,42 @@ CREATE TABLE IF NOT EXISTS db_field_value (
 # 2026-10-26：已搬去 structure module（structure.db db_field_setting 表）——
 # 欄位設定字典嘅家 = structure（同 db_field_unique / db_field_property 一齊）。
 
+# ============ space_start（2026-10-28 用戶設計：縮排語法要求） ============
+# space_start 表：開行空格數（2026-10-28 用戶設計：縮排語法要求）
+# 每行 code 開始前有幾多個 SPACE —— Python 語法要求（縮排）。
+# 0 = 頂格（module 級 code）都係 syntax。
+SPACE_START_DDL = """
+CREATE TABLE IF NOT EXISTS space_start (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    space_total INTEGER NOT NULL UNIQUE,  -- 空格數量（0 to 100）
+    description TEXT,
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# 預設種子（冪等）：space 數量 0-100（0 = 頂格）
+DEFAULT_SPACE_STARTS = list(range(0, 101))
+
+# file_line_space 表：每行嘅開行縮排（2026-10-28 用戶設計）
+#   id | package_id | file_id | line_id | space_start_id
+#   package_id     = taxonomy.registry.id（module）
+#   file_id        = programming.file.id / structure.module.id（檔案）
+#   line_id        = programming.file 嘅行號（line_number）
+#   space_start_id = space_start.id（呢行開頭幾多個 SPACE）
+FILE_LINE_SPACE_DDL = """
+CREATE TABLE IF NOT EXISTS file_line_space (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    package_id     INTEGER NOT NULL,       -- taxonomy.registry.id（module）
+    file_id        INTEGER NOT NULL,       -- programming.file.id（檔案）
+    line_id        INTEGER NOT NULL,       -- 行號
+    space_start_id INTEGER NOT NULL,       -- space_start.id（縮排量）
+    is_active      BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (package_id, file_id, line_id)
+);
+"""
+
 # ============ 程式語言證據（2026-10-27 用戶設計：source 官方網站可證明） ============
 # 概念：evidence = data can proof by source（官方網站 / 標準文件）。
 # 程式語言層一樣可以證明：每種語法單元（AST node / decorator / SQL 語句）
@@ -685,6 +721,8 @@ __all__ = ["PROGRAMMING_LANGUAGE_DDL", "LANGUAGE_ALIAS_DDL",
            "SQL_TYPE_DDL", "DEFAULT_SQL_TYPES", "EVIDENCE_AST_DDL",
            "EVIDENCE_DECORATORS_DDL", "EVIDENCE_SQL_DDL",
            "PROGRAMMING_EVIDENCE_DDL",
+           "SPACE_START_DDL", "DEFAULT_SPACE_STARTS",
+           "FILE_LINE_SPACE_DDL",
            "FORMULA_SUBJECT_DDL", "FORMULA_ACTION_DDL", "FORMULA_OBJECT_DDL",
            "FORMULA_DDL",
            "DEFAULT_FORMULA_SUBJECTS", "DEFAULT_FORMULA_ACTIONS",

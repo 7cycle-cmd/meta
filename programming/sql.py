@@ -31,6 +31,7 @@ class SqlStore:
         self._seed_python_syntax()
         self._seed_structure_types()
         self._seed_sql_keywords()
+        self._seed_space_start()
         # 2026-10-27：全量官方語法/語句 seed（source_proof 證明）
         self._seed_python_operator()
         self._seed_sql_statements()
@@ -453,6 +454,150 @@ class SqlStore:
             sql += " WHERE sk.is_active = 1"
         sql += " ORDER BY sk.id"
         return [dict(r) for r in self.conn.execute(sql)]
+
+    # ---------- space_start（2026-10-28 用戶設計：縮排語法） ----------
+    def _seed_space_start(self):
+        """確保 space_start 表有齊 1-100（冪等）"""
+        for n in _schema.DEFAULT_SPACE_STARTS:
+            self.conn.execute(
+                "INSERT INTO space_start (space_total)"
+                " SELECT ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM space_start WHERE space_total = ?)",
+                (n, n))
+        self.conn.commit()
+
+    def space_starts(self, active_only=True):
+        """列出縮排量字典（1-100）"""
+        sql = "SELECT * FROM space_start"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY space_total"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    def space_start_id(self, space_total):
+        """space_start.id by 數量"""
+        r = self.conn.execute(
+            "SELECT id FROM space_start WHERE space_total = ?",
+            (space_total,)).fetchone()
+        return r["id"] if r else None
+
+    def add_file_line_space(self, package_id, file_id, line_id, space_total):
+        """登記一行嘅縮排量（冪等：UNIQUE package+file+line）"""
+        sid = self.space_start_id(space_total)
+        if not sid:
+            # 自動加（1-100 內）
+            self.conn.execute(
+                "INSERT INTO space_start (space_total) SELECT ?"
+                " WHERE NOT EXISTS (SELECT 1 FROM space_start"
+                "  WHERE space_total = ?)", (space_total, space_total))
+            self.conn.commit()
+            sid = self.space_start_id(space_total)
+        if not sid:
+            return None
+        self.conn.execute(
+            "INSERT INTO file_line_space"
+            " (package_id, file_id, line_id, space_start_id)"
+            " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM file_line_space"
+            "  WHERE package_id = ? AND file_id = ? AND line_id = ?)",
+            (package_id, file_id, line_id, sid,
+             package_id, file_id, line_id))
+        self.conn.commit()
+        r = self.conn.execute(
+            "SELECT id FROM file_line_space"
+            " WHERE package_id = ? AND file_id = ? AND line_id = ?",
+            (package_id, file_id, line_id)).fetchone()
+        return r["id"] if r else None
+
+    def file_line_spaces(self, file_id=None, active_only=True):
+        """列出縮排記錄（可按檔案篩選）"""
+        sql = ("SELECT fls.*, ss.space_total"
+               " FROM file_line_space fls"
+               " JOIN space_start ss ON ss.id = fls.space_start_id")
+        args = []
+        if active_only:
+            sql += " WHERE fls.is_active = 1"
+        if file_id:
+            sql += " AND fls.file_id = ?"
+            args.append(file_id)
+        sql += " ORDER BY fls.file_id, fls.line_id"
+        return [dict(r) for r in self.conn.execute(sql, args)]
+
+    def scan_file_indents(self, module_name):
+        """AST 掃描一個 module：記錄每行開頭縮排（真實縮排入表）
+
+        用標準庫 ast 逐行讀 .py：
+            每行 leading spaces 數量 -> file_line_space（package/file/line/sid）
+        返回 {"module", "lines", "files", "skipped"}
+        """
+        import os as _os
+        import importlib.util as _ilu
+        _ast_sp = _ilu.spec_from_file_location(
+            "_stdlib_ast",
+            _os.path.join(_os.path.dirname(_os.__file__), "ast.py"))
+        _ast_m = _ilu.module_from_spec(_ast_sp)
+        _ast_sp.loader.exec_module(_ast_m)
+        _ast = _ast_m
+        folder = _os.path.join(r"C:\projects\meta", module_name)
+        if not _os.path.isdir(folder):
+            return {"module": module_name, "lines": 0, "files": 0,
+                    "error": "資料夾唔存在"}
+        py_files = sorted(f for f in _os.listdir(folder)
+                          if f.endswith(".py") and not f.startswith("_"))
+        # package_id（taxonomy.registry tree=module）
+        package_id = None
+        try:
+            import sqlite3 as _sq
+            tc = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            tc.row_factory = _sq.Row
+            try:
+                r = tc.execute(
+                    "SELECT id FROM registry WHERE tree_id=2 AND meta = ?",
+                    (module_name,)).fetchone()
+                package_id = r["id"] if r else None
+            finally:
+                tc.close()
+        except Exception:
+            pass
+        if not package_id:
+            return {"module": module_name, "lines": 0, "files": 0,
+                    "error": "taxonomy 搵唔到 module"}
+        # file_id 對照（structure.module file 層）
+        file_ids = {}
+        try:
+            import sqlite3 as _sq
+            sc = _sq.connect(r"C:\projects\meta\structure\structure.db")
+            sc.row_factory = _sq.Row
+            try:
+                for r in sc.execute(
+                        "SELECT sm.id, sm.value FROM structure_module sm"
+                        " JOIN structure_type st ON st.id = sm.structure_type_id"
+                        " WHERE st.meta = 'file' AND sm.module_id = ?",
+                        (package_id,)):
+                    file_ids[r["value"]] = r["id"]
+            finally:
+                sc.close()
+        except Exception:
+            pass
+        n_lines = n_files = 0
+        for fn in py_files:
+            path = _os.path.join(folder, fn)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            n_files += 1
+            fid = file_ids.get(fn)
+            for idx, raw in enumerate(lines, 1):
+                stripped = raw.rstrip("\r\n")
+                if not stripped.strip():
+                    continue  # 空行冇縮排意義
+                n_space = len(stripped) - len(stripped.lstrip(" "))
+                self.add_file_line_space(package_id, fid, idx, n_space)
+                n_lines += 1
+        return {"module": module_name, "lines": n_lines, "files": n_files}
+
 
     def _seed_python_syntax(self):
         """確保 python_ast 表有齊官方語法（冪等；object_id by id）"""

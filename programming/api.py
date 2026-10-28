@@ -113,6 +113,19 @@ class Programming:
         """列出 SQL 關鍵字字典（ISO/IEC 9075 可證明）"""
         return self.store.sql_keywords(active_only)
 
+    # ---------- space_start（2026-10-28 用戶設計：縮排語法） ----------
+    def space_starts(self, active_only=True):
+        """列出縮排量字典（0-100）"""
+        return self.store.space_starts(active_only)
+
+    def file_line_spaces(self, file_id=None, active_only=True):
+        """列出縮排記錄（可按檔案篩選）"""
+        return self.store.file_line_spaces(file_id, active_only)
+
+    def scan_file_indents(self, module_name):
+        """AST 掃描一個 module：記錄每行開頭縮排"""
+        return self.store.scan_file_indents(module_name)
+
     # ---------- formula subject × action × object（2026-10-28 用戶 redesign）----------
     def formula_subjects(self, active_only=True):
         """列出 subject 字典（python / sql）"""
