@@ -120,6 +120,52 @@ class ApiHandler(BaseHTTPRequestHandler):
             return False
         return tok
 
+    def _check_value_permit(self, value, permit_type="call"):
+        """permit 攔截（2026-10-28：value → split_value → permit.db）
+
+        value 對應嘅 split_value 要有 permit（call terminology）先有權。
+        檢查流程：
+            1. value.db 搵 value 對應嘅 split_value（最新一次拆分）
+            2. permit.db：split_value.<id> 對 terminology.<module> 有冇 permit
+        返回 (ok, reason)；ok=False 時 caller 要 _send 403。
+        """
+        value = urllib.parse.unquote(value)
+        # 1. value.db：value -> split_value
+        try:
+            from value import Value
+            v = Value()
+            try:
+                row = v.by_value(value)
+                if not row:
+                    return False, f"value '{value}' 唔存在（value.db）"
+                vid = row["id"]
+                svs = v.split_values(value_id=vid)
+            finally:
+                v.close()
+        except Exception as e:
+            return False, f"value 查詢失敗：{e}"
+        if not svs:
+            # 冇拆分 -> 冇 split_value -> 冇 permit -> 唔准
+            return False, f"value '{value}' 冇拆分（冇 split_value，冇 permit）"
+        # 2. permit.db：任何一個 split_value 有 call permit 就 ok
+        #    object 格式 = terminology.<id>（grant_terminology 寫入）
+        try:
+            from permit import Permit
+            pm = Permit()
+            try:
+                for sv in svs:
+                    rows = pm.permits(
+                        subject=f"value.split_value.{sv['id']}",
+                        permit_type=permit_type)
+                    for r in rows:
+                        if r["object_type"] == "terminology":
+                            return True, f"split_value.{sv['id']} 有權 call terminology（{r['object']}）"
+            finally:
+                pm.close()
+        except Exception as e:
+            return False, f"permit 查詢失敗：{e}"
+        return False, f"value '{value}' 嘅 split_value 冇 call 權（permit 冇）"
+
     def do_GET(self):
         path = self.path.split("?", 1)[0].rstrip("/")
         qs = self._qs()
@@ -219,8 +265,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                     if not value:
                         self._send(400, {"error": "需要 ?value="})
                     else:
-                        self._send(200, t.word_proof(
-                            urllib.parse.unquote(value)))
+                        value = urllib.parse.unquote(value)
+                        # permit 攔截（2026-10-28：value -> split_value -> permit）
+                        ok, reason = self._check_value_permit(value)
+                        if not ok:
+                            self._send(403, {"error": reason, "value": value})
+                        else:
+                            self._send(200, t.word_proof(value))
                 elif path == "/source-register":
                     # 設定 / 列出詞 -> source 選擇（2026-10-27 表話事）
                     word = qs.get("word")
