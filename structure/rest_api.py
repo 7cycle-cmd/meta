@@ -127,22 +127,17 @@ class _Handler(BaseHTTPRequestHandler):
                 mod = qs.get("module")
                 res = s.sync_structure_functions(mod)
                 self._send(200, res)
-            elif path == "/structure-schemas":
-                # resource_schema 嘅物理位置（2026-10-28 用戶設計）
-                rs = qs.get("resource_schema_id")
+            elif path == "/resource-types":
+                # resource_type 字典（2026-10-28 用戶設計）
+                self._send(200, {"resource_types": s.resource_types()})
+            elif path == "/structure-resources":
+                # resource（type × value）嘅物理位置（2026-10-28 用戶設計）
+                rt = qs.get("resource_type_id")
                 pkg = qs.get("package_id")
-                rows = s.list_structure_schemas(
-                    int(rs) if rs else None,
-                    int(pkg) if pkg else None)
-                self._send(200, {"structure_schemas": rows})
-            elif path == "/structure-tools":
-                # resource_tool 嘅物理位置（2026-10-28 用戶設計）
-                rt = qs.get("resource_tool_id")
-                pkg = qs.get("package_id")
-                rows = s.list_structure_tools(
+                rows = s.list_structure_resources(
                     int(rt) if rt else None,
                     int(pkg) if pkg else None)
-                self._send(200, {"structure_tools": rows})
+                self._send(200, {"structure_resources": rows})
             elif path == "/line-numbers":
                 # 行號字典（2026-10-28 用戶設計）
                 pkg = qs.get("package_id")
@@ -227,51 +222,30 @@ class _Handler(BaseHTTPRequestHandler):
                         return
                     ok = s.remove_default_value(tid)
                     self._send(200, {"removed": ok, "type": name})
-                elif path == "/structure-schemas":
-                    # 登記「resource_schema 嘅物理位置」（2026-10-28 用戶設計）
+                elif path == "/structure-resources":
+                    # 登記「resource（type × value）嘅物理位置」（2026-10-28）
                     try:
                         length = int(self.headers.get("Content-Length") or 0)
                         body = json.loads(self.rfile.read(length)
                                           .decode("utf-8")) if length else {}
                     except Exception:
                         body = {}
-                    rs = body.get("resource_schema_id")
+                    rt = body.get("resource_type_id")
+                    val = body.get("value")
                     pkg = body.get("package_id")
                     ln = body.get("line_number")
                     fid = body.get("file_id")
-                    if not rs or not pkg:
-                        self._send(400, {"error": "需要 resource_schema_id +"
-                                                   " package_id"})
+                    if not rt or not val or not pkg:
+                        self._send(400, {"error": "需要 resource_type_id +"
+                                                   " value + package_id"})
                         return
-                    rid = s.add_structure_schema(
-                        int(rs), int(pkg),
+                    rid = s.add_structure_resource(
+                        int(rt), str(val), int(pkg),
                         int(ln) if ln else None,
                         int(fid) if fid else None)
-                    self._send(200, {"structure_schema_id": rid,
-                                     "resource_schema_id": int(rs),
-                                     "package_id": int(pkg)})
-                elif path == "/structure-tools":
-                    # 登記「resource_tool 嘅物理位置」（2026-10-28 用戶設計）
-                    try:
-                        length = int(self.headers.get("Content-Length") or 0)
-                        body = json.loads(self.rfile.read(length)
-                                          .decode("utf-8")) if length else {}
-                    except Exception:
-                        body = {}
-                    rt = body.get("resource_tool_id")
-                    pkg = body.get("package_id")
-                    ln = body.get("line_number")
-                    fid = body.get("file_id")
-                    if not rt or not pkg:
-                        self._send(400, {"error": "需要 resource_tool_id +"
-                                                   " package_id"})
-                        return
-                    rid = s.add_structure_tool(
-                        int(rt), int(pkg),
-                        int(ln) if ln else None,
-                        int(fid) if fid else None)
-                    self._send(200, {"structure_tool_id": rid,
-                                     "resource_tool_id": int(rt),
+                    self._send(200, {"structure_resource_id": rid,
+                                     "resource_type_id": int(rt),
+                                     "value": val,
                                      "package_id": int(pkg)})
                 else:
                     self._send(404, {"error": f"唔知 route: {path}"})

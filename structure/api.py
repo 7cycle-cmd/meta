@@ -120,38 +120,34 @@ class Structure:
         return self.store.structure_files(module_id, active_only)
 
     def list_structure_functions(self, module_id=None, active_only=True):
-        """列出 structure_function（可按 module 篩選，2026-10-28）"""
+        """列出 function 資源（structure_resource type=function）"""
         return self.store.structure_functions(module_id, active_only)
 
     def sync_structure_functions(self, module_name=None):
-        """AST 掃描 function 地址入 structure_function（2026-10-28）"""
+        """AST 掃描 function 地址入 structure_resource（type=function）"""
         return self.store.sync_structure_functions(module_name)
 
-    # ---------- structure_schema / structure_tool（2026-10-28 用戶設計） ----------
-    def add_structure_schema(self, resource_schema_id, package_id,
-                             line_number=None, file_id=None):
-        """登記「resource_schema 嘅物理位置」（冪等，by_id）"""
-        return self.store.add_structure_schema(resource_schema_id,
-                                               package_id,
-                                               line_number, file_id)
+    # ---------- structure_resource（2026-10-28 用戶設計，rename 自 structure_schema）----------
+    def resource_types(self, active_only=True):
+        """列出 resource_type 字典（schema/tool/function/route/api/rest_api）"""
+        return self.store.resource_types(active_only)
 
-    def list_structure_schemas(self, resource_schema_id=None,
-                               package_id=None, active_only=True):
-        """列出 structure_schema（可按 resource / package 篩選）"""
-        return self.store.structure_schemas(resource_schema_id,
-                                             package_id, active_only)
+    def add_structure_resource(self, resource_type_id, value, package_id,
+                               line_number=None, file_id=None):
+        """登記「一個 resource（type × value）嘅物理位置」（冪等，by_id）"""
+        return self.store.add_structure_resource(resource_type_id, value,
+                                                 package_id,
+                                                 line_number, file_id)
 
-    def add_structure_tool(self, resource_tool_id, package_id,
-                           line_number=None, file_id=None):
-        """登記「resource_tool 嘅物理位置」（冪等，by_id）"""
-        return self.store.add_structure_tool(resource_tool_id, package_id,
-                                             line_number, file_id)
+    def resource_type_id(self, value):
+        """resource_type.id by value"""
+        return self.store.resource_type_id(value)
 
-    def list_structure_tools(self, resource_tool_id=None,
-                             package_id=None, active_only=True):
-        """列出 structure_tool（可按 resource / package 篩選）"""
-        return self.store.structure_tools(resource_tool_id,
-                                           package_id, active_only)
+    def list_structure_resources(self, resource_type_id=None,
+                                 package_id=None, active_only=True):
+        """列出 structure_resource（可按 type / package 篩選）"""
+        return self.store.structure_resources(resource_type_id,
+                                              package_id, active_only)
 
     def add_line_number(self, package_id, line_number, file_id=None):
         """登記一個行號實體（冪等）"""

@@ -222,20 +222,21 @@ class SqlStore:
         self.conn.commit()
         # 2026-10-28（用戶設計：4 張 by-id 表接實體位置）——
         # 真實登記「terminology 用咗邊啲 schema」（由已批 import_permit 逐個
-        # 寫入 resource_schema + structure_schema，AST 掃真實行號）。
+        # 寫入 resource_schema + structure_resource，AST 掃真實行號）。
         self._register_resource_schemas()
 
-    # ---------- resource_schema / structure_schema 真實登記（2026-10-28）----------
+    # ---------- resource_schema / structure_resource 真實登記（2026-10-28）----------
     # terminology 啟動建表 = 真係用咗呢 26 個 schema symbol（有 import permit）。
     # 由 permit.db import_permit（by id 已批）逐個登記：
-    #   resource_schema  = (taxonomy_tree_id=4 module tree, schema_registry_id)
-    #   structure_schema = (resource_schema_id, package_id, file_id,
-    #                        line_number=AST 掃真實行號)
+    #   resource_schema      = (taxonomy_tree_id=4 module tree, schema_registry_id)
+    #   structure_resource   = (resource_type_id=schema, value=symbol 名,
+    #                            package_id, file_id,
+    #                            line_number=AST 掃真實行號)
     # 零 hardcode：symbol -> 行號由 AST 掃 schema.py；schema_registry_id 由
     # permit.db import_permit 真表攞。冪等（全部 WHERE NOT EXISTS）。
 
     def _register_resource_schemas(self):
-        """登記已用 schema 到 resource_schema + structure_schema（冪等）"""
+        """登記已用 schema 到 resource_schema + structure_resource（冪等）"""
         try:
             from permit import Permit as _P
             _pp = _P()
@@ -284,14 +285,15 @@ class SqlStore:
                         # resource_schema（tree 2 = module tree，terminology）
                         rsid = _rs.add_resource_schema(
                             2, perm["schema_id"])
-                        # structure_schema（物理位置：package 2058-=
-                        # structure_module id 攞，file = schema.py，行號 AST）
+                        # structure_resource（物理位置：package + file +
+                        # 行號 AST；type='schema'，value=symbol 名）
                         package_id = self._structure_module_id(mid, None)
                         file_id = self._structure_module_id(mid, "schema.py")
                         line = lines.get(perm.get("symbols"))
                         if rsid and package_id:
-                            _st.add_structure_schema(
-                                rsid, package_id,
+                            _st.add_structure_resource(
+                                _st.resource_type_id("schema"),
+                                perm.get("symbols"), package_id,
                                 line_number=line, file_id=file_id)
                         n += 1
                 finally:
