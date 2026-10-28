@@ -609,13 +609,15 @@ class SqlStore:
         if not exp_id or not op_id:
             return
         # 3. 3 步（what=1 / where=2 / how=6），每步一個 condition
+        # 2026-10-28（用戶）：flow 已代表 migrate_audit，condition 唔重複前綴，
+        # 淨係 action 名（value / run / evidence；撞名共享——evidence 指 condition 21）
         steps_def = [
             ("value", 1, "提交值", "value 存在（migration 值）"),
             ("run", 2, "run 狀態", "run 記錄存在（migration_log 有 row）"),
             ("evidence", 6, "證據", "evidence 產生（PASS = 有證據）"),
         ]
         for seq, (act, w5, inp, out) in enumerate(steps_def, start=1):
-            cmeta = f"migrate_audit:{act}"
+            cmeta = act
             self.conn.execute(
                 "INSERT INTO condition (meta)"
                 " SELECT ? WHERE NOT EXISTS"
@@ -836,6 +838,8 @@ class SqlStore:
             return
         # 清理舊版：migrate_* steps 指住共享 condition「migration」-> 刪，改用
         # 每個 action 一個 condition（1 action = 1 condition，2026-10-28 用戶修正）
+        # 2026-10-28（用戶再修正）：flow 已代表 migrate_xxx，condition 唔重複前綴——
+        # 淨係 action 名，撞名共享（例如 5 個 flow 嘅 report 用同一個 condition）。
         shared = self.conn.execute(
             "SELECT id FROM condition WHERE meta = 'migration'").fetchone()
         if shared:
@@ -847,6 +851,15 @@ class SqlStore:
                 "  JOIN condition c ON c.id = q.condition_id"
                 "  WHERE c.id = ?)", (shared["id"],))
             self.conn.commit()
+        # 清理舊 migrate_*:xxx condition（有前綴嗰啲——由 step 先拆開再刪）
+        self.conn.execute(
+            "DELETE FROM step WHERE flow_id IN ("
+            "  SELECT id FROM flow WHERE flow_name LIKE 'migrate_%')"
+            " AND question_id IN ("
+            "  SELECT q.id FROM question q"
+            "  JOIN condition c ON c.id = q.condition_id"
+            "  WHERE c.meta LIKE 'migrate_%:%')")
+        self.conn.commit()
         for fname, steps in flows.items():
             # flow
             self.conn.execute(
@@ -866,8 +879,9 @@ class SqlStore:
                 if not w5row:
                     continue
                 w5 = w5row["id"]
-                # condition meta = f"{fname}:{action}"（每個 action 一個 condition）
-                cmeta = f"{fname}:{action}"
+                # condition meta = action 名（flow 已代表 migrate_xxx，唔重複）
+                # 撞名共享：e.g. report（5 個 flow 都係同一個 condition）
+                cmeta = action
                 self.conn.execute(
                     "INSERT INTO condition (meta)"
                     " SELECT ? WHERE NOT EXISTS"
