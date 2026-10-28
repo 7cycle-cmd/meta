@@ -44,6 +44,23 @@ class Permit:
         """列出目標"""
         return self.store.objects(object_type, active_only)
 
+    # ---------- import permit（2026-10-28 用戶：worker 唔可以靠 import 逃工）----------
+    def check_import_permit(self, module_name, imported, symbols="*"):
+        """檢查 module 有冇權 import（allowlist 之外 = 擋）"""
+        return self.store.check_import_permit(module_name, imported, symbols)
+
+    def register_import(self, module_name, imported, symbols="*"):
+        """登記 import（冇 permit 會 raise PermissionError）"""
+        return self.store.register_import(module_name, imported, symbols)
+
+    def imports(self, module_name=None, active_only=True):
+        """列出 import_registry"""
+        return self.store.imports(module_name, active_only)
+
+    def import_permits(self, active_only=True):
+        """列出 import_permit allowlist"""
+        return self.store.import_permits(active_only)
+
     def count(self):
         return self.store.count()
 

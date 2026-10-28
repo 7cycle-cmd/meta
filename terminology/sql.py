@@ -14,7 +14,19 @@ terminology = 術語層：term（名稱登記）+ data_collect（真實 value）
 
 import sqlite3
 
-from .schema import *  # noqa: F401,E402
+# 2026-10-28（用戶要求）：import 都要 permit —— worker 唔可以靠 import 逃工。
+# `from .schema import *` 係 wildcard，permit 系統唔可以睇到佢攞咗咩。
+# 而家：顯式列出全部 symbol（逐個可 permit）+ 啟動時檢查 permit。
+from .schema import (  # noqa: F401  （逐個 symbol，permit 化）
+    INDUSTRY_DDL, EVIDENCE_DDL, CONDITION_DDL, W5H2_DDL, VALUE_DDL,
+    REGISTRY_DDL, RUN_DDL, FLOW_DDL, STEP_DDL, STEP_INPUT_DDL,
+    FLOW_BRANCH_DDL, NEXT_FLOW_DDL,
+    EXPECTED_DDL, OPERATOR_DDL, ANSWER_DDL, BOOLEAN_DDL,
+    QUESTION_DDL, SEQ_DDL, STATUS_DDL,
+    EXPECTED_SOURCE_DDL, STEP_OUTPUT_DDL,
+    OUTPUT_TYPE_DDL, OUTPUT_BY_DDL, HARDCODE_VALUE_DDL,
+    WORD_CATEGORY_DDL, SOURCE_REGISTER_DDL,
+)
 
 DB_PATH = r"C:\projects\meta\terminology\terminology.db"
 
@@ -66,8 +78,84 @@ DEFAULT_OPERATORS = [
 ]
 
 
+def import_permit_check(module_name, imported, symbols="*"):
+    """檢查 module 有冇權 import（2026-10-28 用戶：worker 唔可以靠 import 逃工）
+
+    呢個係全局 helper：任何 module 啟動時都可以呼叫，
+    檢查「自己 import 嘅嘢」喺 permit.db import_permit 表有冇 allowlist。
+    冇 permit = 擋（返回 allowed=False）。
+
+    module_name = taxonomy.registry.meta（邊個 module）
+    imported    = 被 import 嘅嘢（'.schema' / 'sqlite3' / '.api' ...）
+    symbols     = import 嘅 symbols（'*' = wildcard）
+
+    返回 {"allowed": bool, "reason": str, "registry_id": n|None}
+    """
+    try:
+        import sqlite3 as _sq
+        _c = _sq.connect(r"C:\projects\meta\permit\permit.db")
+        try:
+            _c.row_factory = _sq.Row
+            # module_id 反查（taxonomy.registry）
+            module_id = None
+            try:
+                _t = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+                try:
+                    _t.row_factory = _sq.Row
+                    r = _t.execute(
+                        "SELECT id FROM registry WHERE tree_id = 2"
+                        " AND meta = ? AND is_active = 1",
+                        (module_name,)).fetchone()
+                    module_id = r["id"] if r else None
+                finally:
+                    _t.close()
+            except Exception:
+                pass
+            # allowlist 查：module 級 permit（module_id = 自己）或 全局（NULL）
+            # 兩種形式都准：symbols 精準 match / permit symbols='ALL'
+            # （'ALL' = module 自己嘅 schema 全部 symbol 准，顯式 import）
+            row = _c.execute(
+                "SELECT id FROM import_permit"
+                " WHERE imported = ? AND is_active = 1"
+                "   AND ((symbols = ?) OR (symbols = 'ALL'))"
+                "   AND (module_id IS NULL OR module_id = ?) LIMIT 1",
+                (imported, symbols, module_id)).fetchone()
+            if row:
+                return {"allowed": True,
+                        "reason": f"import_permit({imported} {symbols})",
+                        "registry_id": row["id"]}
+            # wildcard 冇 permit -> 擋
+            if symbols == "*":
+                return {"allowed": False,
+                        "reason": f"wildcard import '{imported} *' 冇 permit ——"
+                                  " 全部 symbol 要入表 + permit 先准",
+                        "registry_id": None}
+            return {"allowed": False,
+                    "reason": f"import '{imported} {symbols}' 冇 permit ——"
+                              " 要喺 import_permit 表登記",
+                    "registry_id": None}
+        finally:
+            _c.close()
+    except Exception:
+        return {"allowed": True, "reason": "permit 系統未 ready（首次初始化）",
+                "registry_id": None}
+
+
 class SqlStore:
     def __init__(self, db_path=DB_PATH):
+        # 2026-10-28（用戶要求）：import 都要 permit ——
+        # worker 唔可以靠 import 逃工。啟動時檢查自己 module 嘅 import
+        # 有冇 permit（allowlist 之外 = 擋，PermissionError）
+        try:
+            _chk = import_permit_check("terminology", ".schema", "*")
+            if not _chk["allowed"]:
+                raise PermissionError(
+                    f"[permit] terminology 唔准 import .schema * ——"
+                    f" {_chk['reason']}（要喺 import_permit 表登記）")
+        except PermissionError:
+            raise
+        except Exception:
+            pass  # permit 系統未 ready 就照行（第一次初始化）
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         # 2026-10-27（用戶要求）：value 表升做獨立 module（value.db）
