@@ -46,6 +46,10 @@ class Value:
         """列出拆分值（可按拆分 / 值篩選）"""
         return self.store.split_values(split_total_id, value_id, active_only)
 
+    def split_and_prove(self, value, parts, taxonomy_id=None, role_id=None):
+        """一站式：value → split → 行 split_value flow → 寫 run（證明）"""
+        return self.store.split_and_prove(value, parts, taxonomy_id, role_id)
+
     # ---------- terminology 授權（2026-10-28 用戶要求） ----------
     def grant_terminology(self, terminology_id, split_value_id):
         """授權一個拆分值有權 call terminology（冪等）"""

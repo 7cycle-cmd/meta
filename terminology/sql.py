@@ -110,6 +110,7 @@ class SqlStore:
         self._migrate_run_evidence_id()
         self._migrate_run_role_id()
         self._migrate_proof_flows()
+        self._migrate_split_flow()
         self._migrate_source_register_defaults()
         self._migrate_value_taxonomy_id()
         self._seed()
@@ -278,6 +279,98 @@ class SqlStore:
                     (fid, qid, seq, fid, seq))
         self.conn.commit()
         print("[migrate] evidence/proof/verify flow + condition + step 就緒")
+
+    def _migrate_split_flow(self):
+        """遷移（幂等）：split_value flow + 7 步（5W2H，2026-10-28 用戶要求）
+
+        flow：split_value —— 值拆分嘅證明鏈
+        7 步（5W2H）：
+            what      -> 拆咩（value_id）
+            where     -> 邊個 db（value.db）
+            where     -> 邊張表（split_total / split_value）
+            when      -> 幾時拆（created_at）
+            who       -> 邊個拆（taxonomy_id）
+            why       -> 點解拆（permit_id 授權）
+            how much  -> 拆幾多份（split_total）
+        冪等：flow_name UNIQUE + step UNIQUE(flow_id, seq_id)
+        """
+        # 1. flow
+        self.conn.execute(
+            "INSERT INTO flow (flow_name)"
+            " SELECT 'split_value' WHERE NOT EXISTS"
+            " (SELECT 1 FROM flow WHERE flow_name = 'split_value')")
+        frow = self.conn.execute(
+            "SELECT id FROM flow WHERE flow_name = 'split_value'").fetchone()
+        if not frow:
+            return
+        fid = frow["id"]
+        # 2. expected + operator
+        exp_true = self.conn.execute(
+            "SELECT id FROM expected WHERE boolean_id = 1"
+            " ORDER BY id LIMIT 1").fetchone()
+        exp_id = exp_true["id"] if exp_true else None
+        op_eq = self.conn.execute(
+            "SELECT id FROM operator WHERE meta = '=='"
+            " ORDER BY id LIMIT 1").fetchone()
+        op_id = op_eq["id"] if op_eq else None
+        if not exp_id or not op_id:
+            return
+        # 3. 7 步定義（condition_id 用 split_value condition；5w2h_id 1-7）
+        #    condition：用 source 類（有 split_value condition 就啱用）
+        crow = self.conn.execute(
+            "SELECT id FROM condition WHERE meta = 'split_value'"
+        ).fetchone()
+        if not crow:
+            # 冇 split_value condition -> 建一個
+            cur = self.conn.execute(
+                "INSERT INTO condition (meta)"
+                " SELECT 'split_value' WHERE NOT EXISTS"
+                " (SELECT 1 FROM condition WHERE meta = 'split_value')")
+            self.conn.commit()
+            crow = self.conn.execute(
+                "SELECT id FROM condition WHERE meta = 'split_value'").fetchone()
+        if not crow:
+            return
+        cid = crow["id"]
+        # 5W2H id 1-7（what/where/when/who/why/how/how much）
+        w_ids = [1, 2, 2, 3, 4, 5, 7]  # where 用 2 次（db + 表）
+        # 4. 建 step（每步一個 question：condition × 5w2h × expected）
+        for seq, w5 in enumerate(w_ids, start=1):
+            has = self.conn.execute(
+                "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
+                (fid, seq)).fetchone()
+            if has:
+                continue
+            qrow = self.conn.execute(
+                "SELECT id FROM question WHERE condition_id = ?"
+                ' AND "5w2h_id" = ? AND expected_id = ?',
+                (cid, w5, exp_id)).fetchone()
+            if qrow:
+                qid = qrow["id"]
+            else:
+                cur = self.conn.execute(
+                    "INSERT INTO question"
+                    " (condition_id, \"5w2h_id\", operator_id, expected_id)"
+                    " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                    " (SELECT 1 FROM question WHERE condition_id = ?"
+                    '  AND "5w2h_id" = ? AND expected_id = ?)',
+                    (cid, w5, op_id, exp_id, cid, w5, exp_id))
+                qid = cur.lastrowid if cur.rowcount else None
+                if qid is None:
+                    qr = self.conn.execute(
+                        "SELECT id FROM question WHERE condition_id = ?"
+                        ' AND "5w2h_id" = ? AND expected_id = ?',
+                        (cid, w5, exp_id)).fetchone()
+                    qid = qr["id"] if qr else None
+            if not qid:
+                continue
+            self.conn.execute(
+                "INSERT INTO step (flow_id, question_id, seq_id)"
+                " SELECT ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?)",
+                (fid, qid, seq, fid, seq))
+        self.conn.commit()
+        print("[migrate] split_value flow + 7 步就緒")
 
     def _migrate_word_industry_evidence(self):
         """遷移（幂等）：word_industry -> 通用 evidence 表（2026-10-25）

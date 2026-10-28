@@ -148,6 +148,17 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     r = v.add_split(value_id, parts)
                     self._send(200, r)
+            elif path == "/split-and-prove":
+                # 一站式：value → split → 行 split_value flow → 寫 run
+                val = body.get("value")
+                parts = body.get("parts")
+                if not val or not parts:
+                    self._send(400, {"error": "需要 value + parts"})
+                else:
+                    r = v.split_and_prove(val, parts,
+                                          body.get("taxonomy_id"),
+                                          body.get("role_id"))
+                    self._send(200, r)
             elif path == "/terminology":
                 terminology_id = body.get("terminology_id")
                 split_value_id = body.get("split_value_id")

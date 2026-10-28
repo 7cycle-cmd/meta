@@ -155,6 +155,36 @@ class SqlStore:
         sql += " ORDER BY seq_id"
         return [dict(r) for r in self.conn.execute(sql, args)]
 
+    def split_and_prove(self, value, parts, taxonomy_id=None, role_id=None):
+        """一站式：value → split → 行 split_value flow → 寫 run（證明）
+
+        value   = 值名（自動 add + add_split）
+        parts   = 拆分部分 [str, ...]
+        role_id = rule.db role.id（可選）
+
+        返回 {"value_id", "split_total_id", "split_values",
+              "run": {...}, "flow": "split_value"}
+        """
+        # 1. value 登記 + 拆分
+        value = str(value)
+        vid = self.add(value, taxonomy_id=taxonomy_id)
+        r = self.add_split(vid, parts)
+        # 2. 行 split_value flow（存在先跑；唔存在 graceful）
+        run = None
+        try:
+            from terminology import Terminology
+            t = Terminology()
+            try:
+                run = t.run_flow("split_value", value=value, save=True,
+                                 role_id=role_id)
+            finally:
+                t.close()
+        except Exception as e:
+            run = {"error": str(e)}
+        return {"value_id": vid, "split_total_id": r["split_total_id"],
+                "split_values": r["split_values"], "run": run,
+                "flow": "split_value"}
+
     # ---------- terminology 授權（2026-10-28 用戶要求） ----------
     def grant_terminology(self, terminology_id, split_value_id):
         """授權一個拆分值有權 call terminology（冪等）
