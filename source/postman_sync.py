@@ -122,6 +122,32 @@ class PostmanSync:
             uid=workspace_uid)
         return sid, status, data
 
+    def workspace_collections(self, workspace_uid):
+        """拉 workspace 入面嘅 collections 真實清單（uid + name）"""
+        sid, status, data = self.workspace(workspace_uid)
+        if status == 200 and isinstance(data, dict):
+            return sid, status, data.get("workspace", {}).get("collections", [])
+        return sid, status, []
+
+    def sync_workspace_all(self, workspace_uid, environment_uid=None):
+        """一次過拉：workspace + collections 清單 + 每個 collection 內容
+
+        == 真實定義證據（唔係 agent 生成）==
+        """
+        out = {"workspace": self.workspace(workspace_uid)}
+        sid, st, cols = self.workspace_collections(workspace_uid)
+        out["collections"] = (sid, st)
+        if st == 200:
+            out["collection_items"] = []
+            for c in cols:
+                cuid = c.get("uid") or c.get("id")
+                if cuid:
+                    csid, cst, cdata = self.collection(cuid)
+                    out["collection_items"].append((csid, cst, cdata))
+        if environment_uid:
+            out["environment"] = self.environment(environment_uid)
+        return out
+
     def environment(self, env_uid):
         """拉 environment 真實內容（postman_uid=59268432-80931d99-1bff-4628-9b72-af5e73772ad5）"""
         if not env_uid:
