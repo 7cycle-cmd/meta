@@ -28,16 +28,34 @@ from .sql import SqlStore
 API_BASE = "https://api.postman.com"
 SOURCE_ID_POSTMAN_API = 15      # source.db source.id=15 = "Postman API"
 ENV_KEY = "POSTMAN_API_KEY"
+_SECRET_FILE = r"C:\projects\meta\secret.env"
 
 
 def _api_key():
-    """攞 API key（只准環境變數）—— 唔可以經參數 / chat 傳入"""
+    """攞 API key —— 優先環境變數，fallback secret.env（只讀檔，唔經 chat）"""
     key = os.environ.get(ENV_KEY, "").strip()
-    if not key:
-        raise ValueError(
-            f"未設定 {ENV_KEY} 環境變數。請喺 terminal 執行：\n"
-            f'    $env:{ENV_KEY} = "PMAK-..."\n'
-            "（Postman API key 喺 Postman 右上角 Account Settings → API keys 生成）")
+    if key:
+        return key
+    # fallback：secret.env（POSTMAN_TOKEN = "PMAK-..."）
+    try:
+        with open(_SECRET_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name, _, val = line.partition("=")
+                if name.strip() != "POSTMAN_TOKEN":
+                    continue
+                v = val.strip().strip('"').strip("'")
+                if v:
+                    return v
+    except OSError:
+        pass
+    raise ValueError(
+        f"未設定 {ENV_KEY} 環境變數 / secret.env POSTMAN_TOKEN。\n"
+        "請喺 terminal 執行：\n"
+        f'    $env:{ENV_KEY} = "PMAK-..."\n'
+        "（Postman API key 喺 Postman 右上角 Account Settings → API keys 生成）")
     return key
 
 
@@ -45,9 +63,13 @@ def _get(url, timeout=30):
     """對 Postman 官方 API 發 GET，返回 (http_status, parsed_json, raw_text)。
 
     呢度只係「拉取」—— 唔係產生證據；證據本身係 Postman 平台記錄。
+
+    2026-10-28（實測）：Cloudflare 擋 Python urllib 預設 UA
+    （error 1010 browser_signature_banned）-> 要帶 Postman 官方 UA。
     """
     req = urllib.request.Request(url, headers={
         "X-API-Key": _api_key(),
+        "User-Agent": "PostmanRuntime/7.36.0",
         "Accept": "application/json",
     })
     try:
@@ -204,6 +226,14 @@ class PostmanSync:
                  r.get("started_at") or r.get("startedAt"),
                  r.get("completed_at") or r.get("completedAt")))
         self.store.conn.commit()
+
+    def collections(self, workspace_uid=None):
+        """列出 account 全部 collections（真實定義清單）"""
+        path = "/collections"
+        if workspace_uid:
+            path += "?" + urllib.parse.urlencode({"workspace": workspace_uid})
+        sid, status, data = self._fetch("collection_list", path, note="list collections")
+        return sid, status, data
 
     def run_detail(self, run_uid):
         """拉單次 run 詳細結果（真實 test 結果）"""
