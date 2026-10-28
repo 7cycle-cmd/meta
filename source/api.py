@@ -256,3 +256,52 @@ class Source:
 
     def close(self):
         self.store.close()
+
+
+class Postman:
+    """Postman 官方 API 數據（證據嚟自 Postman 平台，唔係 agent）
+
+    用法：
+        from source.api import Postman
+        p = Postman()
+        p.sync_workspace("2b2010a3-...")     # 拉 workspace 真實數據
+        p.environments()                     # 睇返拉咗嘅嘢
+    """
+
+    def __init__(self, db_path=None):
+        from .postman_sync import PostmanSync
+        self.sync = PostmanSync(db_path if db_path else None)
+
+    def sync_workspace(self, workspace_uid,
+                       environment_uid=None, mock_uid=None):
+        """拉 Postman 平台真實數據（全部留原始記錄）
+
+        workspace_uid  = Postman workspace UID
+        environment_uid = Postman environment UID
+        mock_uid       = mock server UID（同步佢嘅真實執行 log）
+        返回 dict：每步 (sync_id, http_status)
+        """
+        out = {}
+        sid, st, data = self.sync.workspace(workspace_uid)
+        out["workspace"] = (sid, st)
+        if environment_uid:
+            sid, st, data = self.sync.environment(environment_uid)
+            out["environment"] = (sid, st)
+        if mock_uid:
+            sid, st, data = self.sync.mock_responses(mock_uid)
+            out["mock_responses"] = (sid, st)
+        sid, st, data = self.sync.runs()
+        out["runs"] = (sid, st)
+        return out
+
+    def environments(self):
+        """睇返已拉取嘅 environment 原始數據"""
+        return self.sync.store.conn.execute(
+            "SELECT * FROM postman_sync WHERE api_type='environment'"
+            " ORDER BY id DESC LIMIT 10").fetchall()
+
+    def stats(self):
+        return self.sync.store.postman_stats()
+
+    def close(self):
+        self.sync.close()

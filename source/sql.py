@@ -34,6 +34,10 @@ class SqlStore:
         self.conn.execute(RESULT_DDL)
         self.conn.execute(SOURCE_PROOF_DDL)
         self.conn.execute(VALUE_DDL)
+        # 2026-10-28：Postman 真實數據表（官方 API 拉取證據）
+        self.conn.execute(POSTMAN_SYNC_DDL)
+        self.conn.execute(POSTMAN_MOCK_DDL)
+        self.conn.execute(POSTMAN_RUN_DDL)
         # 2026-10-24p：字典表（symbol/english/INT/language/data_format/
         # industry/authority_level）已搬去 terminology —— source 唔再建
         self._migrate_word_source_rename()
@@ -767,6 +771,36 @@ class SqlStore:
                 "SELECT * FROM industry WHERE meta = ?", (meta,)).fetchone()
         finally:
             tc.close()
+
+    # ---------- Postman 真實數據（2026-10-28） ----------
+    def postman_syncs(self, limit=50):
+        """原始拉取記錄（證據本身）"""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM postman_sync ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()]
+
+    def postman_mock_logs(self, limit=50):
+        """Mock Server 平台執行 log（真實請求/回應）"""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM postman_mock ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()]
+
+    def postman_runs(self, limit=50):
+        """Runner / Cloud run 真實執行結果"""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM postman_run ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()]
+
+    def postman_stats(self):
+        """證據統計（sync / mock log / run 各自幾多條）"""
+        out = {}
+        for name, table in (("sync", "postman_sync"),
+                            ("mock", "postman_mock"),
+                            ("run", "postman_run")):
+            c = self.conn.execute(
+                f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            out[name] = c
+        return out
 
     def commit(self):
         self.conn.commit()
