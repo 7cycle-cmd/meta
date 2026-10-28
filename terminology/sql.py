@@ -1093,16 +1093,35 @@ class SqlStore:
         """
         # 確保表存在（全新 DB：建表喺 _attach_value_db 之後先執行）
         self.conn.execute(STEP_INPUT_DDL)
+        # 2026-10-28（用戶修正）：source_table/source_column 用「真實表欄」——
+        # 表話事，build expected_source 時直接查呢個 db.表.欄 攞 *_id
+        #   表名    欄位    對應 5W2H（7 維度）
         rows = [
-            (1, "value", "id"),
-            (2, "module", "db"),
-            (3, "permit", "id"),
-            (4, "identity", "id"),
-            (5, "lineage", "id"),
-            (6, "taxonomy", "id"),
-            (7, "split_total", "id"),
+            (1, "value", "value.id"),            # what      -> 提交值 id
+            (2, "module", "module.db"),          # where     -> module db
+            (3, "permit", "permit.id"),          # when      -> permit id
+            (4, "identity", "identity.id"),      # who       -> identity id
+            (5, "lineage", "lineage.id"),        # why       -> lineage id
+            (6, "taxonomy", "taxonomy.id"),      # how       -> taxonomy id
+            (7, "value", "split_total.id"),      # how much  -> split_total id
         ]
-        for w5, src, col in rows:
+        # 舊格式遷移：source_table 冇「.」嘅舊行 -> 改「db.表」
+        for r in self.conn.execute(
+                "SELECT id, source_table FROM step_input"
+                " WHERE source_table NOT LIKE '%.%'"):
+            old = r["source_table"]
+            if old in ("value", "module", "permit", "identity", "lineage",
+                       "taxonomy", "split_total", "source", "structure",
+                       "rule", "role", "worker", "terminology"):
+                new = old if old in ("value", "module", "permit", "identity",
+                                     "lineage", "taxonomy", "source",
+                                     "structure", "rule", "role", "worker",
+                                     "terminology") else f"{old}.{old}"
+                self.conn.execute(
+                    "UPDATE step_input SET source_table = ? WHERE id = ?",
+                    (f"{old}.{old}", r["id"]))
+        for w5, dbm, spec in rows:
+            tbl, col = spec.split(".")
             # 每 condition（例如 split_value）都要有 7 行
             for cid in [r["id"] for r in self.conn.execute(
                     "SELECT id FROM condition WHERE is_active = 1")]:
@@ -1112,9 +1131,9 @@ class SqlStore:
                     " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
                     " (SELECT 1 FROM step_input WHERE condition_id = ?"
                     '  AND "5w2h_id" = ?)',
-                    (cid, w5, src, col, cid, w5))
+                    (cid, w5, f"{dbm}.{tbl}", col, cid, w5))
         self.conn.commit()
-        print("[migrate] step_input 7 維度 seed 就緒")
+        print("[migrate] step_input 7 維度 seed 就緒（真實表欄）")
 
     def flow_completeness(self, flow_name=None):
         """測量：每條 flow 喺 5W2H 7 維度嘅完整度（2026-10-28 用戶設計）
@@ -1211,6 +1230,113 @@ class SqlStore:
     # step_input = 輸入測量；step_output = 輸出測量。
     # 鏈：value -> condition × 5W2H × operator(yes>==, no>!=)
     #          -> expected_source -> output_format = 1,0
+
+    def _build_expected_sources(self, source_module=None):
+        """由 question 逐個建 expected_source（2026-10-28 用戶要求）
+
+        用戶：「before you need to have code for each condition 1 by 1,
+               now your job is to base on the question to have expect_source,
+               as it is *_id, method is which table and which field」
+
+        方法（表話事，零 hardcode）：
+            1. 每個 condition 喺 step_input 有 source_table/source_column
+               （例如 value.id / module.db / permit.id / identity.id）
+            2. source_table 係「模組名」，對應真實 DB：
+               value -> value.db、permit -> permit.db、identity -> identity.db、
+               module -> module.db、taxonomy -> taxonomy.db、lineage -> lineage.db
+            3. 每個 question 由呢個 source 真查 DB 攞 *_id
+            4. 寫 expected_source（value = 攞到嘅 *_id，value_id 登記 value.db）
+
+        返回 {"created": n, "skipped": n, "by_module": {...}}
+        """
+        # step_input: condition -> (5w2h -> source_table/source_column)
+        rows = self.conn.execute(
+            "SELECT condition_id, \"5w2h_id\", source_table, source_column"
+            " FROM step_input WHERE is_active = 1").fetchall()
+        src_map = {}
+        for r in rows:
+            src_map.setdefault(r["condition_id"], {})[r["5w2h_id"]] = (
+                r["source_table"], r["source_column"])
+        # 模組名 -> (DB 檔, 表名)（source_table = 「db.表」；表話事）
+        import os
+        META = r"C:\projects\meta"
+        def db_of(tblspec):
+            """source_table「db.表」 -> (db 路徑, 表名)；攞唔到 -> (None, None)"""
+            tblspec = (tblspec or "").strip()
+            if "." in tblspec:
+                dbm, tbl = tblspec.split(".", 1)
+            else:
+                dbm, tbl = tblspec, tblspec
+            dbm = dbm.strip().lower()
+            tbl = tbl.strip()
+            if not dbm or not tbl:
+                return None, None
+            # taxonomy 嘅 id 喺 registry 表
+            if dbm == "taxonomy" and tbl == "taxonomy":
+                tbl = "registry"
+            # identity 嘅 id 喺 registry 表（identity.db 冇 identity 表）
+            if dbm == "identity" and tbl == "identity":
+                tbl = "registry"
+            # split_total 喺 value.db
+            if tbl == "split_total":
+                return os.path.join(META, "value", "value.db"), "split_total"
+            # module 冇 db 檔（where = db 檔名概念，跳過）
+            if dbm == "module":
+                return None, None
+            return os.path.join(META, dbm, f"{dbm}.db"), tbl
+        created = skipped = 0
+        by_module = {}
+        qs = self.conn.execute(
+            "SELECT id, condition_id, \"5w2h_id\" FROM question"
+            " WHERE is_active = 1 ORDER BY condition_id, \"5w2h_id\"").fetchall()
+        for q in qs:
+            src = src_map.get(q["condition_id"], {}).get(q["5w2h_id"])
+            if not src:
+                skipped += 1
+                continue
+            table, column = src
+            # 已經有 expected_source -> 跳過（冪等）
+            has = self.conn.execute(
+                "SELECT id FROM expected_source WHERE question_id = ?",
+                (q["id"],)).fetchone()
+            if has:
+                skipped += 1
+                continue
+            # 真查 DB 攞 *_id
+            sid = None
+            try:
+                import sqlite3 as _sq
+                dbp, tbl = db_of(table)
+                if dbp and os.path.isfile(dbp):
+                    c = _sq.connect(dbp)
+                    try:
+                        c.row_factory = _sq.Row
+                        # column 可能係「id」；攞第一行個 id
+                        rr = c.execute(
+                            f"SELECT {column} AS v FROM {tbl} LIMIT 1"
+                        ).fetchone()
+                        sid = rr["v"] if rr else None
+                    finally:
+                        c.close()
+            except Exception:
+                sid = None
+            if sid is None:
+                skipped += 1
+                continue
+            # 寫 expected_source（value = *_id，value_id 自動登記）
+            try:
+                esid = self.set_expected_source(q["id"], value=str(sid))
+                # 同步 question.expected_source_id（直接指住）
+                self.conn.execute(
+                    "UPDATE question SET expected_source_id = ? WHERE id = ?",
+                    (esid, q["id"]))
+                by_module[table] = by_module.get(table, 0) + 1
+                created += 1
+            except Exception:
+                skipped += 1
+        self.conn.commit()
+        return {"created": created, "skipped": skipped,
+                "by_module": by_module}
 
     def set_expected_source(self, question_id, formula_id=None,
                             formula_cutter_id=None, value=None,

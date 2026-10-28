@@ -43,6 +43,7 @@ MIGRATION_LOG_DDL = """
 CREATE TABLE IF NOT EXISTS migration_log (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id             INTEGER,            -- terminology run.id（驗證鏈執行）
+    value_id           INTEGER,            -- value.db value.id（提交值，2026-10-28）
     type_id            INTEGER,            -- type.id（migration type 字典）
     taxonomy_id        INTEGER,            -- taxonomy.registry.id（邊個 module）
     structure_db_table TEXT,               -- 改邊張表（db_table 名）

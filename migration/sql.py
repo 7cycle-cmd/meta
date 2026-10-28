@@ -55,7 +55,7 @@ class SqlStore:
         self.conn.commit()
 
     def _migrate_log_flow_columns(self):
-        """遷移（幂等）：migration_log 加 flow_id / step_id 欄"""
+        """遷移（幂等）：migration_log 加 flow_id / step_id / value_id 欄"""
         cols = {c[1] for c in self.conn.execute(
             "PRAGMA table_info('migration_log')")}
         if "flow_id" not in cols:
@@ -66,6 +66,11 @@ class SqlStore:
             self.conn.execute(
                 "ALTER TABLE migration_log ADD COLUMN step_id INTEGER")
             self.conn.commit()
+        if "value_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE migration_log ADD COLUMN value_id INTEGER")
+            self.conn.commit()
+            print("[migration] migration_log + value_id 欄")
 
     def _seed_types(self):
         """type 字典 seed（冪等：WHERE NOT EXISTS，唔燒 AUTOINCREMENT 號）"""
@@ -162,30 +167,34 @@ class SqlStore:
         if run_id is None and run_flow:
             run_id = self._auto_run(value or f"migration:{table or module_name}",
                                     value_id=value_id)
+        # value_id 一定要有（用戶：where value_id for migration？）——
+        # 冇傳 -> 由 run 反查（_auto_run 內部已登記 value.db，taxonomy_id=migration）
+        if value_id is None and run_id is not None:
+            value_id = self._run_value_id(run_id)
         # flow_id / step_id 由 terminology run 反查（flow/step 已喺 terminology.db）
         flow_id, step_id = self._run_flow_step(run_id)
         if table:
             self.conn.execute(
                 "INSERT INTO migration_log"
-                " (run_id, type_id, taxonomy_id, structure_db_table,"
+                " (run_id, value_id, type_id, taxonomy_id, structure_db_table,"
                 "  description, row_id, flow_id, step_id)"
-                " SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
+                " SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM migration_log WHERE run_id IS ?"
                 "  AND taxonomy_id IS ? AND structure_db_table IS ?"
                 "  AND type_id = ? AND description IS ?)",
-                (run_id, tid, taxonomy_id, table, description, row_id,
-                 flow_id, step_id,
+                (run_id, value_id, tid, taxonomy_id, table, description,
+                 row_id, flow_id, step_id,
                  run_id, taxonomy_id, table, tid, description))
         else:
             self.conn.execute(
                 "INSERT INTO migration_log"
-                " (run_id, type_id, taxonomy_id, structure_db_table,"
+                " (run_id, value_id, type_id, taxonomy_id, structure_db_table,"
                 "  description, row_id, flow_id, step_id)"
-                " SELECT ?, ?, ?, NULL, ?, ?, ?, ? WHERE NOT EXISTS"
+                " SELECT ?, ?, ?, ?, NULL, ?, ?, ?, ? WHERE NOT EXISTS"
                 " (SELECT 1 FROM migration_log WHERE run_id IS ?"
                 "  AND taxonomy_id IS ? AND structure_db_table IS NULL"
                 "  AND type_id = ? AND description IS ?)",
-                (run_id, tid, taxonomy_id, description, row_id,
+                (run_id, value_id, tid, taxonomy_id, description, row_id,
                  flow_id, step_id,
                  run_id, taxonomy_id, tid, description))
         self.conn.commit()
@@ -195,6 +204,24 @@ class SqlStore:
             " AND type_id = ? AND description IS ?",
             (run_id, taxonomy_id, table, tid, description)).fetchone()
         return r["id"] if r else None
+
+    def _run_value_id(self, run_id):
+        """由 terminology run id 反查 value_id（喺 terminology.db run 表）"""
+        if not run_id:
+            return None
+        try:
+            import sqlite3 as _sq
+            c = _sq.connect(r"C:\projects\meta\terminology\terminology.db")
+            try:
+                c.row_factory = _sq.Row
+                r = c.execute(
+                    "SELECT value_id FROM run WHERE id = ?",
+                    (run_id,)).fetchone()
+                return r["value_id"] if r else None
+            finally:
+                c.close()
+        except Exception:
+            return None
 
     def _run_flow_step(self, run_id):
         """由 terminology run id 反查 flow_id / step_id（喺 terminology.db）
@@ -242,6 +269,9 @@ class SqlStore:
         用戶要求（2026-10-28）：
             run_id = terminology.run —— migration 一定要有真 run；
             value -> condition + operator + expected -> evidence。
+        2026-10-28（用戶再要求）：
+            value_id 一定要有 —— migration 嘅值入 value.db（value module），
+            taxonomy_id = migration（零 hardcode，由 taxonomy.registry 反查）。
 
         只跑 migrate_audit flow（唔跑 source_register —— 會開 Source
         -> Source init 又 record -> 無窮遞歸）。
@@ -251,6 +281,11 @@ class SqlStore:
             from terminology.api import Terminology
             t = Terminology()
             try:
+                # 1. value_id 一定要有（冇 -> 由 value 登記，taxonomy_id=migration）
+                if value_id is None and value is not None:
+                    tid = self._taxonomy_id("migration")
+                    value_id = t.add_value(value, taxonomy_id=tid)
+                # 2. 跑 migrate_audit flow（用 value_id，唔好淨靠 value 字串）
                 res = t.run_flow("migrate_audit", value=value,
                                  value_id=value_id, save=True)
                 return res.get("run_id")

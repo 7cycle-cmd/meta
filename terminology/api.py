@@ -164,6 +164,10 @@ class Terminology:
         return self.store.set_expected_source(
             question_id, formula_id, formula_cutter_id, value, output_format)
 
+    def build_expected_sources(self, source_module=None):
+        """由 question 逐個建 expected_source（step_input 表話事攞 *_id）"""
+        return self.store._build_expected_sources(source_module)
+
     def expected_sources(self, question_id=None):
         """列出 expected_source（可按 question 篩選）"""
         return self.store.expected_sources(question_id)
