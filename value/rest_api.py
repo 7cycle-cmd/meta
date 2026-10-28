@@ -1,13 +1,19 @@
 """rest_api.py — value REST API
 
 routes：
-    GET  /health
-    GET  /values?taxonomy_id=        列出值（可按 module 篩選）
-    GET  /value/<id>                 攞一個值
-    GET  /value/by-value?value=xxx   按值查
-    GET  /registry                   值資產 registry（即 value 表）
-    GET  /count                      值數量
-    POST /values   {"value": "...", "taxonomy_id": n}   新增值
+    GET  /health                        健康檢查
+    GET  /values?taxonomy_id=           列出值（可按 module 篩選）
+    GET  /value/<id>                    攞一個值
+    GET  /value/by-value?value=xxx      按值查
+    GET  /registry                      值資產 registry（即 value 表）
+    GET  /count                         值數量
+    GET  /split-totals?value_id=        列出拆分總覽
+    GET  /split-values?split_total_id=  列出拆分值
+    GET  /terminology?split_value_id=   列出 terminology 授權
+    GET  /can-call-terminology?split_value_id=&terminology_id=   權限檢查
+    POST /values       {"value": "...", "taxonomy_id": n}                    新增值
+    POST /split        {"value_id": n, "parts": ["hello", "world", "123"]}    拆分值
+    POST /terminology  {"terminology_id": n, "split_value_id": n}            授權 call terminology
 """
 import sys
 
@@ -82,6 +88,29 @@ class _Handler(BaseHTTPRequestHandler):
             elif path.startswith("/value/"):
                 vid = int(path.rsplit("/", 1)[1])
                 self._send(200, v.get(vid) or {"error": "唔存在"})
+            elif path == "/split-totals":
+                qs = self._qs()
+                vid = int(qs["value_id"]) if qs.get("value_id") else None
+                self._send(200, {"split_totals": v.split_totals(value_id=vid)})
+            elif path == "/split-values":
+                qs = self._qs()
+                stid = int(qs["split_total_id"]) if qs.get("split_total_id") else None
+                vid = int(qs["value_id"]) if qs.get("value_id") else None
+                self._send(200, {"split_values": v.split_values(
+                    split_total_id=stid, value_id=vid)})
+            elif path == "/terminology":
+                qs = self._qs()
+                svid = int(qs["split_value_id"]) if qs.get("split_value_id") else None
+                self._send(200, {"terminology": v.terminology_rows(
+                    split_value_id=svid)})
+            elif path == "/can-call-terminology":
+                qs = self._qs()
+                svid = int(qs["split_value_id"]) if qs.get("split_value_id") else None
+                tid = int(qs["terminology_id"]) if qs.get("terminology_id") else None
+                if svid is None or tid is None:
+                    self._send(400, {"error": "需要 split_value_id + terminology_id"})
+                else:
+                    self._send(200, {"allowed": v.can_call_terminology(svid, tid)})
             else:
                 self._send(404, {"error": f"唔知 route: {path}"})
         finally:
@@ -105,6 +134,22 @@ class _Handler(BaseHTTPRequestHandler):
                 else:
                     vid = v.add(val, body.get("taxonomy_id"))
                     self._send(200, {"value_id": vid})
+            elif path == "/split":
+                value_id = body.get("value_id")
+                parts = body.get("parts")
+                if not value_id or not parts:
+                    self._send(400, {"error": "需要 value_id + parts"})
+                else:
+                    r = v.add_split(value_id, parts)
+                    self._send(200, r)
+            elif path == "/terminology":
+                terminology_id = body.get("terminology_id")
+                split_value_id = body.get("split_value_id")
+                if not terminology_id or not split_value_id:
+                    self._send(400, {"error": "需要 terminology_id + split_value_id"})
+                else:
+                    rid = v.grant_terminology(terminology_id, split_value_id)
+                    self._send(200, {"terminology_id": rid})
             else:
                 self._send(404, {"error": f"唔知 route: {path}"})
         finally:
