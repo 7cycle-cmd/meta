@@ -505,6 +505,7 @@ class SqlStore:
         self._repair_dangling_steps()
         self._migrate_expected_source_value_id()
         self._migrate_step_output_value()
+        self._migrate_flow_total_step()
         self._migrate_drop_formula_cutter_id()
         self._migrate_expected_source_formula()
         self._migrate_question_expected_source_id()
@@ -1285,6 +1286,31 @@ class SqlStore:
                 "ALTER TABLE step_output ADD COLUMN output_value TEXT")
             self.conn.commit()
             print("[migrate] step_output + output_value 欄（how much 累計）")
+
+    def _migrate_flow_total_step(self):
+        """遷移（幂等）：flow 加 total_step 欄 + 回填（2026-10-28 用戶要求）
+
+        每條 flow 嘅步數總計（由 step 表真數），唔 hardcode。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('flow')")}
+        if "total_step" not in cols:
+            self.conn.execute(
+                "ALTER TABLE flow ADD COLUMN total_step INTEGER"
+                " NOT NULL DEFAULT 0")
+            self.conn.commit()
+            print("[migrate] flow + total_step 欄")
+        # 回填：每條 flow 由 step 表真數（冪等：每次跑都會同步）
+        rows = self.conn.execute(
+            "SELECT f.id FROM flow f WHERE f.is_active = 1").fetchall()
+        for r in rows:
+            n = self.conn.execute(
+                "SELECT COUNT(*) c FROM step WHERE flow_id = ?"
+                " AND is_active = 1", (r["id"],)).fetchone()["c"]
+            self.conn.execute(
+                "UPDATE flow SET total_step = ? WHERE id = ?",
+                (n, r["id"]))
+        self.conn.commit()
 
     def _migrate_question_expected_source_id(self):
         """遷移（幂等）：question 加 expected_source_id 欄（2026-10-28 用戶要求）

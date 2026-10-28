@@ -96,10 +96,11 @@ CREATE TABLE IF NOT EXISTS run (
 
 FLOW_DDL = """
 CREATE TABLE IF NOT EXISTS flow (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    flow_name  TEXT    NOT NULL UNIQUE,
-    is_active  BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-    created_at TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_name   TEXT    NOT NULL UNIQUE,
+    total_step  INTEGER NOT NULL DEFAULT 0,  -- 步數總計（2026-10-28 用戶要求）
+    is_active   BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
 );
 """
 
