@@ -56,9 +56,17 @@ class Permit:
         return self.store.request_import(module_name, imported, symbols,
                                           reason, tool_id)
 
-    def approve_import(self, request_id, decided_by="tool"):
-        """批准申請（-> import_permit 正式授權）"""
-        return self.store.approve_import(request_id, decided_by)
+    def approve_import(self, request_id, decided_by="tool",
+                       condition_id=None, flow_id=None, step_id=None,
+                       question_id=None, expected_source_id=None):
+        """批准申請（-> import_permit 正式授權，帶證明鏈）
+
+        證明鏈：function = condition × 5W2H × operator × expected
+        expected_source_id = 解釋「點解可以批 permit」
+        """
+        return self.store.approve_import(
+            request_id, decided_by, condition_id, flow_id, step_id,
+            question_id, expected_source_id)
 
     def reject_import(self, request_id, decided_by="tool"):
         """拒絕申請"""

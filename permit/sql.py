@@ -23,7 +23,7 @@ class SqlStore:
         # import 授權全部按 need 申請（import_request -> 批准 -> import_permit）。
 
     def _migrate_import_tables(self):
-        """遷移（幂等）：import_permit 加 granted_by 欄 + import_request 表補建"""
+        """遷移（幂等）：import_permit 加 granted_by 欄 + 證明鏈 5 欄 + import_request 表補建"""
         cols = {c[1] for c in self.conn.execute(
             "PRAGMA table_info('import_permit')")}
         if "granted_by" not in cols:
@@ -31,6 +31,14 @@ class SqlStore:
                 "ALTER TABLE import_permit ADD COLUMN granted_by TEXT")
             self.conn.commit()
             print("[permit] import_permit + granted_by 欄")
+        # 2026-10-28（用戶）：批准要有證明鏈（condition/flow/step/question/expected_source）
+        for new_col in ("condition_id", "flow_id", "step_id", "question_id",
+                        "expected_source_id"):
+            if new_col not in cols:
+                self.conn.execute(
+                    f"ALTER TABLE import_permit ADD COLUMN {new_col} INTEGER")
+                self.conn.commit()
+                print(f"[permit] import_permit + {new_col} 欄")
         # import_request 表（舊 DB 冇 -> 補建）
         has = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table'"
@@ -100,32 +108,52 @@ class SqlStore:
                 "status": "pending",
                 "hint": "申請已提交，等 tool / monitor 批准"}
 
-    def approve_import(self, request_id, decided_by="tool"):
+    def approve_import(self, request_id, decided_by="tool",
+                       condition_id=None, flow_id=None, step_id=None,
+                       question_id=None, expected_source_id=None):
         """批准一個 import 申請（-> 寫 import_permit 正式授權）
 
-        decided_by = 邊個批（'tool' / 'monitor' / admin module）
+        decided_by    = 邊個批（'tool' / 'monitor' / admin module）
+        證明鏈（2026-10-28 用戶：function = condition × 5W2H × operator
+        × expected；批准都要有證明）：
+            condition_id       = terminology.condition.id（判斷條件）
+            flow_id            = terminology.flow.id（證明 flow）
+            step_id            = terminology.step.id（證明步驟）
+            question_id        = terminology.question.id（判斷問題）
+            expected_source_id = terminology.expected_source.id
+                                 （解釋「點解可以批」）
         """
         r = self.conn.execute(
             "SELECT * FROM import_request WHERE id = ?", (request_id,)
         ).fetchone()
         if not r:
             return {"error": "申請唔存在"}
-        # 寫入正式 permit
+        # 寫入正式 permit（埋證明鏈）
         self.conn.execute(
             "INSERT INTO import_permit"
-            " (module_id, imported, symbols, description, granted_by)"
-            " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
+            " (module_id, imported, symbols, description, granted_by,"
+            "  condition_id, flow_id, step_id, question_id, expected_source_id)"
+            " SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS"
             " (SELECT 1 FROM import_permit"
             "  WHERE module_id IS ? AND imported = ? AND symbols = ?)",
             (r["module_id"], r["imported"], r["symbols"], r["reason"],
-             decided_by, r["module_id"], r["imported"], r["symbols"]))
+             decided_by, condition_id, flow_id, step_id, question_id,
+             expected_source_id,
+             r["module_id"], r["imported"], r["symbols"]))
         self.conn.execute(
             "UPDATE import_request SET status_id = 2, decided_by = ?,"
             " updated_at = datetime('now','localtime') WHERE id = ?",
             (decided_by, request_id))
         self.conn.commit()
         return {"approved": True, "request_id": request_id,
-                "permit": f"{r['imported']} {r['symbols']}"}
+                "permit": f"{r['imported']} {r['symbols']}",
+                "proof": {
+                    "condition_id": condition_id,
+                    "flow_id": flow_id,
+                    "step_id": step_id,
+                    "question_id": question_id,
+                    "expected_source_id": expected_source_id,
+                }}
 
     def reject_import(self, request_id, decided_by="tool"):
         """拒絕一個 import 申請"""

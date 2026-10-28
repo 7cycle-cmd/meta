@@ -153,6 +153,12 @@ CREATE TABLE IF NOT EXISTS import_registry (
 # 2026-10-28（用戶要求）：唔可以有「default」—— 全部按 need 申請。
 # 每個 module 有自己 function/skill，需要 import 就登記申請（import_request），
 # 由 tool（module 嘅工具中心）/ monitor（READ API 中心）批准先寫入呢張 permit。
+#
+# 2026-10-28（用戶要求）：批准都要有證明鏈 ——
+#   function = condition × 5W2H × operator × expected
+#   permit 唔可以淨係「set status=approved」；
+#   批 = 證明鏈全部 PASS（terminology condition/flow/step/question 表）+ 
+#   expected_source = 解釋「點解可以批 permit」（explanation）。
 IMPORT_PERMIT_DDL = """
 CREATE TABLE IF NOT EXISTS import_permit (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,6 +167,11 @@ CREATE TABLE IF NOT EXISTS import_permit (
     symbols            TEXT    NOT NULL DEFAULT '*',  -- 准 import 嘅 symbols
     description        TEXT,
     granted_by         TEXT,                -- 邊個批（'tool' / 'monitor' / admin module）
+    condition_id       INTEGER,             -- terminology.condition.id（判斷條件）
+    flow_id            INTEGER,             -- terminology.flow.id（證明 flow）
+    step_id            INTEGER,             -- terminology.step.id（證明步驟）
+    question_id        INTEGER,             -- terminology.question.id（判斷問題）
+    expected_source_id INTEGER,             -- terminology.expected_source.id（解釋點解可以批）
     is_active          BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     UNIQUE (module_id, imported, symbols)
@@ -174,7 +185,7 @@ CREATE TABLE IF NOT EXISTS import_permit (
 #   reason         = 點解需要（module 自己講，link 返 skill/function）
 #   status_id      = 1=pending（等批）2=approved（已批）3=rejected（已拒）
 #   tool_id        = tool.registry.id（邊個工具需要呢個 import，可空）
-# 一次申請 -> 批准 -> 寫 import_permit（正式授權記錄）
+# 一次申請 -> 批准（要有證明鏈）-> 寫 import_permit（正式授權記錄）
 IMPORT_REQUEST_DDL = """
 CREATE TABLE IF NOT EXISTS import_request (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
