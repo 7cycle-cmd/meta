@@ -193,10 +193,14 @@ TEMPLATE_DDL = (VALUE_DDL + W5H2_DDL + ANSWER_DDL + OPERATOR_DDL
 
 # ============ Proof 系統（2026-10-27 用戶設計） ============
 # formula：一條完整證明公式（full = 完整字串；package_id/file_id/line = 出處地址）
+# 2026-10-28（用戶：postman formula = type + path）：
+#   method + path = HTTP 請求證明（postman/tool 型 formula；冇 = SQL 型）
 FORMULA_DDL = """
 CREATE TABLE IF NOT EXISTS formula (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    full        TEXT    NOT NULL,   -- 完整公式（xxx=<select * from ...>）
+    full        TEXT,               -- 完整公式（xxx=<select * from ...>；HTTP 型可空）
+    method      TEXT,               -- HTTP method（GET / POST / PUT ...；空 = SQL 型）
+    path        TEXT,               -- HTTP 路徑或完整 URL（/api/users 或 https://...）
     package_id  INTEGER,            -- taxonomy.taxonomy.id（出處 package）
     file_id     INTEGER,            -- structure_module.id（出處 file 層）
     line        INTEGER,            -- 出處行號
@@ -225,11 +229,15 @@ CREATE TABLE IF NOT EXISTS formula_cuter (
 );
 """
 
-# proof：一條公式用邊種語言（language_id 指向 dictionary）
+# proof：一條 formula 用邊種語言 / 邊個工具證明（2026-10-28 加 tool）
+#   language_id = language.id（SQL / Python ...；語言型）
+#   tool_id     = tool.db registry.id（postman / curl 等工具型；2026-10-28）
+#  兩者至少一個；postman 唔係語言 -> tool_id 指向 tool registry。
 PROOF_DDL = """
 CREATE TABLE IF NOT EXISTS proof (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    language_id  INTEGER NOT NULL,   -- language.id（SQL / Python ...）
+    language_id  INTEGER,            -- language.id（SQL / Python ...）
+    tool_id      INTEGER,            -- tool.db registry.id（postman ...）
     formula_id   INTEGER NOT NULL,   -- formula.id
     is_active    BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at   TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),

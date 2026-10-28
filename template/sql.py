@@ -50,8 +50,77 @@ class SqlStore:
                                 + FORMULA_COMMENT_DDL)
         self.conn.commit()
         self._migrate_formula_cuter_seq()
+        self._migrate_formula_tool_proof()
         self._migrate_names()
         self._seed_decorators()
+
+    def _migrate_formula_tool_proof(self):
+        """遷移（幂等）：formula 加 method/path 欄 + full 改可空 + proof 加 tool_id
+
+        用戶：postman formula = type + path（HTTP method + URL），
+        postman 唔係語言 -> proof.tool_id（tool.db registry.id）。
+        formula.method/path 加欄（SQL 型 formula 留空 = 照舊）。
+        formula.full 舊版 NOT NULL -> rebuild 改可空（HTTP 型冇 SQL）。
+        proof.language_id 改可空（tool 型 proof 冇 language）。
+        """
+        fcols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('formula')")}
+        if "method" not in fcols:
+            self.conn.execute(
+                "ALTER TABLE formula ADD COLUMN method TEXT")
+            self.conn.commit()
+            print("[template] formula + method 欄")
+        if "path" not in fcols:
+            self.conn.execute(
+                "ALTER TABLE formula ADD COLUMN path TEXT")
+            self.conn.commit()
+            print("[template] formula + path 欄")
+        # full NOT NULL -> 可空（rebuild：SQLite 唔改 constraint）
+        nn = {r[1]: r[3] for r in self.conn.execute(
+            "PRAGMA table_info('formula')")}
+        if nn.get("full") == 1:
+            rows = [dict(r) for r in self.conn.execute(
+                "SELECT * FROM formula ORDER BY id")]
+            self.conn.execute("DROP TABLE formula")
+            self.conn.execute(FORMULA_DDL)
+            for r in rows:
+                self.conn.execute(
+                    "INSERT INTO formula (id, full, method, path,"
+                    " package_id, file_id, line, db_file, is_active,"
+                    " created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (r["id"], r["full"], r.get("method"), r.get("path"),
+                     r.get("package_id"), r.get("file_id"), r.get("line"),
+                     r.get("db_file"), r.get("is_active", 1),
+                     r.get("created_at")))
+            self.conn.commit()
+            print(f"[template] formula rebuild：{len(rows)} 行（full 改可空）")
+        pcols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('proof')")}
+        if "tool_id" not in pcols:
+            self.conn.execute(
+                "ALTER TABLE proof ADD COLUMN tool_id INTEGER")
+            self.conn.commit()
+            print("[template] proof + tool_id 欄")
+        # proof.language_id NOT NULL -> 可空（rebuild：tool 型冇 language）
+        pnn = {r[1]: r[3] for r in self.conn.execute(
+            "PRAGMA table_info('proof')")}
+        if pnn.get("language_id") == 1:
+            prows = [dict(r) for r in self.conn.execute(
+                "SELECT * FROM proof ORDER BY id")]
+            self.conn.execute("DROP TABLE proof")
+            self.conn.execute(PROOF_DDL)
+            for r in prows:
+                self.conn.execute(
+                    "INSERT INTO proof (id, language_id, tool_id,"
+                    " formula_id, is_active, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (r["id"], r.get("language_id"), r.get("tool_id"),
+                     r["formula_id"], r.get("is_active", 1),
+                     r.get("created_at")))
+            self.conn.commit()
+            print(f"[template] proof rebuild：{len(prows)} 行"
+                  f"（language_id 改可空，+tool_id）")
 
     # ---------- formula_comment（2026-10-28 用戶設計）----------
     # 目的：code 入面嘅 comment 唔再留喺 file，搬入表 ——
@@ -825,6 +894,117 @@ class SqlStore:
         self.conn.commit()
         return {"formula_id": formula_id, "created": False, "updated": True}
 
+    # ---------- tool formula（2026-10-28 用戶：postman = tool，type + path） ----------
+    def add_tool_formula(self, method, path, tool_id, package_id=None,
+                         file_id=None, line=None, body=None,
+                         description=None):
+        """登記一條 tool 型 formula（postman/curl 證明，冪等）
+
+        method       = HTTP method（GET / POST / PUT / DELETE ...）
+        path         = HTTP 路徑或完整 URL（/api/users 或 https://...）
+        tool_id      = tool.db registry.id（postman 等工具身份）
+        body         = HTTP body（JSON；可選，放 full=<body>）
+        description  = 描述（放 full 前面：xxx=<body>；可選）
+
+        formula 兩型：
+            HTTP 型（method + path）-> execute_formula 發請求
+            SQL 型（full=<SQL>）     -> 照舊
+
+        返回 {"formula_id", "created"}
+        """
+        # tool_id 一定要存在（唔准 fake：tool.db registry 真查）
+        tool_ok = False
+        try:
+            import sqlite3 as _sq
+            tc = _sq.connect(r"C:\projects\meta\tool\tool.db")
+            try:
+                tc.row_factory = _sq.Row
+                tool_ok = tc.execute(
+                    "SELECT id FROM registry WHERE id = ?", (tool_id,)
+                ).fetchone() is not None
+            finally:
+                tc.close()
+        except Exception:
+            tool_ok = False
+        if not tool_ok:
+            return {"error": f"tool_id={tool_id} 喺 tool.db registry 唔存在"
+                             "（唔可以 fake tool）"}
+        method = (method or "GET").upper()
+        if method not in ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"):
+            return {"error": f"method 唔支援: {method}"
+                             "（GET/POST/PUT/DELETE/PATCH/HEAD）"}
+        if not path or not str(path).strip():
+            return {"error": "path 一定要（HTTP 路徑 / URL）"}
+        # body -> full（xxx=<body> 格式）
+        full = None
+        if body:
+            full = (description + "=" if description else "xxx=") \
+                   + f"<{body}>"
+        # 冪等：method + path + tool 組合
+        existing = self.conn.execute(
+            "SELECT f.id FROM formula f"
+            " JOIN proof p ON p.formula_id = f.id"
+            " WHERE f.method = ? AND f.path = ? AND p.tool_id = ?"
+            " AND f.is_active = 1 LIMIT 1",
+            (method, path, tool_id)).fetchone()
+        if existing:
+            return {"formula_id": existing["id"], "created": False}
+        cur = self.conn.execute(
+            "INSERT INTO formula (full, method, path, package_id, file_id,"
+            " line) VALUES (?, ?, ?, ?, ?, ?)",
+            (full, method, path, package_id, file_id, line))
+        formula_id = cur.lastrowid
+        # proof（tool 型：tool_id；language_id 留空）
+        self.conn.execute(
+            "INSERT INTO proof (tool_id, formula_id)"
+            " SELECT ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM proof WHERE tool_id = ? AND formula_id = ?)",
+            (tool_id, formula_id, tool_id, formula_id))
+        self.conn.commit()
+        return {"formula_id": formula_id, "created": True}
+
+    def proofs(self, formula_id=None, active_only=True):
+        """列出 proof（語言型 + 工具型）"""
+        sql = ("SELECT p.id, p.language_id, p.tool_id, p.formula_id,"
+               " f.method, f.path, f.full"
+               " FROM proof p"
+               " LEFT JOIN formula f ON f.id = p.formula_id"
+               " WHERE 1=1")
+        args = []
+        if formula_id is not None:
+            sql += " AND p.formula_id = ?"
+            args.append(formula_id)
+        if active_only:
+            sql += " AND p.is_active = 1"
+        sql += " ORDER BY p.id"
+        rows = [dict(r) for r in self.conn.execute(sql, args)]
+        # language 名（language.db 反查；graceful）
+        try:
+            import sqlite3 as _sq
+            lc = _sq.connect(r"C:\projects\meta\language\language.db")
+            try:
+                langs = {r[0]: r[1] for r in lc.execute(
+                    "SELECT id, meta FROM language")}
+            finally:
+                lc.close()
+        except Exception:
+            langs = {}
+        # tool module 名（tool.db reverse）
+        try:
+            import sqlite3 as _sq
+            tc = _sq.connect(r"C:\projects\meta\tool\tool.db")
+            try:
+                tools = {r[0]: r[1] for r in tc.execute(
+                    "SELECT id, module_id FROM registry")}
+            finally:
+                tc.close()
+        except Exception:
+            tools = {}
+        for r in rows:
+            r["language"] = langs.get(r["language_id"])
+            r["tool_module_id"] = tools.get(r["tool_id"])
+        return rows
+
     def _decorator_table_id(self, table_meta):
         """（helper）表名 -> structure_db_table.id（structure.db 權威）
 
@@ -890,12 +1070,13 @@ class SqlStore:
         return None
 
     def execute_formula(self, formula_id, params=None):
-        """執行一條 formula 嘅 SQL（冇結果 / 出錯 -> False）
+        """執行一條 formula（冇結果 / 出錯 -> False）
 
-        formula.full 入面 <...> 之間係 SQL。
-        有 preflight_condition -> 用條件生成 WHERE（真實欄位）；
-        冇條件 -> 攞 <...> 內 SQL，placeholder（"module_id" 等）由
-        params 代換，`table` 由 preflight_table 真表名代換。
+        formula 兩型（2026-10-28 用戶）：
+            SQL 型   = full 入面 <...> 係 SQL（照舊）
+            HTTP 型  = method + path（postman/tool 證明）：
+                        發 HTTP 請求（method + path），
+                        200 = PASS，其他 / 連唔到 = FAIL
         返回 {"ok": bool, "rows": int, "error": str}
         """
         import re
@@ -905,6 +1086,9 @@ class SqlStore:
         if not r:
             return {"ok": False, "error": f"formula {formula_id} 唔存在"}
         params = params or {}
+        # HTTP 型（method + path）—— postman / tool 證明
+        if r["method"] and r["path"]:
+            return self._execute_http_formula(dict(r), params)
         full = r["full"]
         m = re.search(r"<(.+)>", full)
         if not m:
@@ -1091,6 +1275,47 @@ class SqlStore:
                 _c.close()
         except Exception as exc:
             return {"ok": False, "error": str(exc), "sql": sql}
+
+    def _execute_http_formula(self, r, params=None):
+        """執行 HTTP 型 formula（postman / tool 證明，2026-10-28）
+
+        r = formula row（method + path + full = HTTP body 模板可選）
+        params 代換 path / body 入面嘅 placeholder（"module_id" 等）。
+        200-299 = PASS（ok=True）；其他 / 連唔到 = FAIL。
+        返回 {"ok": bool, "status": int, "url": str, "error": str}
+        """
+        import urllib.request as _url
+        method = (r.get("method") or "GET").upper()
+        path = r.get("path") or ""
+        body = None
+        # full 有 <...> = HTTP body（json）；冇 = 淨 path
+        if r.get("full"):
+            import re as _re
+            m = _re.search(r"<(.+)>", r["full"])
+            if m:
+                body = m.group(1)
+        # placeholder 代換（"module_id" 等）
+        for k, v in (params or {}).items():
+            if isinstance(v, str):
+                v = v.replace("'", "''")
+            path = path.replace(f'"{k}"', str(v))
+            if body:
+                body = body.replace(f'"{k}"', str(v))
+        url = path
+        if url.startswith("/"):
+            # 相對路徑 -> localhost（meta 站台）
+            url = "http://127.0.0.1:9500" + url
+        try:
+            req = _url.Request(url, method=method)
+            if body:
+                req.add_header("Content-Type", "application/json")
+                req.data = body.encode("utf-8")
+            with _url.urlopen(req, timeout=10) as resp:
+                return {"ok": 200 <= resp.status < 300,
+                        "status": resp.status, "url": url, "error": None}
+        except Exception as exc:
+            return {"ok": False, "status": None, "url": url,
+                    "error": str(exc)}
 
     # ============ Evidence 引擎（2026-10-27 用戶要求：formula 生成證據） ============
     def gen_evidence_formulas(self, targets=None):

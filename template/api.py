@@ -75,12 +75,31 @@ class Template:
         return self.store._cut_formula(formula_id)
 
     def execute_formula(self, formula_id, params=None):
-        """執行一條 formula 嘅 SQL（真表查詢）"""
+        """執行一條 formula：SQL 型（<...> SQL）或 HTTP 型（method+path）"""
         return self.store.execute_formula(formula_id, params)
 
     def proof_for_flow(self, flow_name):
         """搵一個 flow 嘅 proof formula step"""
         return self.store.proof_formula_for_flow(flow_name)
+
+    # ---------- tool formula（2026-10-28 用戶：postman = tool，type + path）----------
+    def add_tool_formula(self, method, path, tool_id, package_id=None,
+                         file_id=None, line=None, body=None,
+                         description=None):
+        """登記一條 tool 型 formula（postman/curl 證明，冪等）
+
+        method  = HTTP method（GET / POST / PUT / DELETE / PATCH / HEAD）
+        path    = HTTP 路徑或完整 URL（/api/users 或 https://...）
+        tool_id = tool.db registry.id（postman 等工具身份）
+        body    = HTTP body（JSON；可選）
+        """
+        return self.store.add_tool_formula(method, path, tool_id,
+                                           package_id, file_id, line,
+                                           body, description)
+
+    def proofs(self, formula_id=None):
+        """列出 proof（語言型 + 工具型）"""
+        return self.store.proofs(formula_id)
 
     # ---------- Evidence（2026-10-27：formula 生成證據，唔 replace SSOT） ----------
     def gen_evidence_formulas(self, targets=None):

@@ -188,6 +188,23 @@ class ApiHandler(BaseHTTPRequestHandler):
                         cid = t.set_formula_comment(int(fid), comment)
                         self._send(200, {"formula_comment_id": cid,
                                          "rows": t.formula_comments(int(fid))})
+                # ---------- tool formula（2026-10-28 用戶：postman type+path）----------
+                elif path == "/add-tool-formula":
+                    method = qs.get("method")
+                    path = qs.get("path")
+                    tool_id = qs.get("tool_id")
+                    if not method or not path or not tool_id:
+                        self._send(400, {"error": "需要 ?method=&path=&tool_id="})
+                    else:
+                        res = t.add_tool_formula(
+                            method, path, int(tool_id),
+                            body=qs.get("body"),
+                            description=qs.get("description"))
+                        self._send(200, res)
+                elif path == "/proofs":
+                    fid = qs.get("formula_id")
+                    self._send(200, {"proofs": t.proofs(
+                        int(fid) if fid else None)})
                 else:
                     self._send(404, {"error": f"唔知 route: {path}"})
             finally:
