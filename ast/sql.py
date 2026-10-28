@@ -36,6 +36,7 @@ class SqlStore:
         ]))
         self.conn.commit()
         self._seed_decorators()
+        self._migrate_decorator_names()
 
     def close(self):
         try:
@@ -107,6 +108,53 @@ class SqlStore:
         return [dict(r) for r in self.conn.execute(sql)]
 
     # ---------- decorator 字典（2026-10-28 用戶：由 programming 搬嚟 ast） ----------
+    def _migrate_decorator_names(self):
+        """遷移（幂等）：decorator meta 統一 snake_case 全詞（2026-10-28 用戶要求）
+
+        classmethod -> class_method / staticmethod -> static_method /
+        abstractmethod -> abstract_method / formula_def -> formula_definition /
+        dataclass -> data_class / functools.wraps -> function_tools.wraps /
+        contextmanager -> context_manager / pytest.fixture -> python_test.fixture /
+        singledispatch -> single_dispatch / asynccontextmanager ->
+        async_context_manager / classproperty -> class_property
+        冪等：UPDATE 只改存在嘅舊名（新名唔郁）。
+        """
+        renames = {
+            "classmethod": "class_method",
+            "staticmethod": "static_method",
+            "abstractmethod": "abstract_method",
+            "formula_def": "formula_definition",
+            "dataclass": "data_class",
+            "functools.wraps": "function_tools.wraps",
+            "contextmanager": "context_manager",
+            "pytest.fixture": "python_test.fixture",
+            "singledispatch": "single_dispatch",
+            "asynccontextmanager": "async_context_manager",
+            "classproperty": "class_property",
+        }
+        n = 0
+        for old, new in renames.items():
+            old_row = self.conn.execute(
+                "SELECT id FROM decorator WHERE meta = ?", (old,)).fetchone()
+            if not old_row:
+                continue
+            new_row = self.conn.execute(
+                "SELECT id FROM decorator WHERE meta = ?", (new,)).fetchone()
+            if new_row:
+                # 新名已存在（seed 插咗新行）-> 刪舊行（新行有齊資料）
+                self.conn.execute(
+                    "DELETE FROM decorator WHERE id = ?", (old_row["id"],))
+            else:
+                # 新名未存在 -> 直接 rename
+                self.conn.execute(
+                    "UPDATE decorator SET meta = ?, updated_at ="
+                    " datetime('now','localtime') WHERE id = ?",
+                    (new, old_row["id"]))
+            n += 1
+        if n:
+            self.conn.commit()
+            print(f"[ast] decorator meta rename（snake_case）：{n} 行")
+
     def _seed_decorators(self):
         """確保 decorator 表有齊官方/實務 decorator（冪等）"""
         for meta, desc in DEFAULT_DECORATORS:
