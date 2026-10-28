@@ -147,7 +147,12 @@ CREATE TABLE IF NOT EXISTS import_registry (
 #   imported  = 被 import 嘅嘢（'.schema' = 自己 module 嘅 schema）
 #   symbols   = 准 import 嘅 symbols（'*' = wildcard 都要記錄）
 #   description = 描述
+#   granted_by = 邊個批（'tool' / 'monitor' / 'admin_module' —— module 有自己
+#              function/skill，需要 import 就申請，tool/monitor 管局）
 # 冇呢張表嘅 record = 唔准 import（擋住 worker 逃工）
+# 2026-10-28（用戶要求）：唔可以有「default」—— 全部按 need 申請。
+# 每個 module 有自己 function/skill，需要 import 就登記申請（import_request），
+# 由 tool（module 嘅工具中心）/ monitor（READ API 中心）批准先寫入呢張 permit。
 IMPORT_PERMIT_DDL = """
 CREATE TABLE IF NOT EXISTS import_permit (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,24 +160,38 @@ CREATE TABLE IF NOT EXISTS import_permit (
     imported           TEXT    NOT NULL,    -- 被 import 嘅嘢
     symbols            TEXT    NOT NULL DEFAULT '*',  -- 准 import 嘅 symbols
     description        TEXT,
+    granted_by         TEXT,                -- 邊個批（'tool' / 'monitor' / admin module）
     is_active          BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     UNIQUE (module_id, imported, symbols)
 );
 """
 
-# 預設 import permit（冪等）：每個 module 都應該有權 import 自己嘅 .schema
-# 同標準庫 sqlite3。呢啲係「合法 import」嘅 allowlist。
-DEFAULT_IMPORT_PERMITS = [
-    ("module.schema",       "標準：自己 module 嘅 schema"),
-    ("sqlite3",             "標準庫：SQLite 連接"),
-    ("json",                "標準庫：JSON"),
-    ("os",                  "標準庫：作業系統"),
-    ("sys",                 "標準庫：系統"),
-]
+# import_request 表：module 嘅 import 申請（2026-10-28 用戶：按 need 申請，冇 default）
+#   module_id      = taxonomy.registry.id（邊個 module 申請）
+#   imported       = 想 import 嘅嘢（'.schema' / 'sqlite3' / 'source.api' ...）
+#   symbols        = 想 import 嘅 symbols（'ALL' = 全部；'SqlStore' 單個）
+#   reason         = 點解需要（module 自己講，link 返 skill/function）
+#   status_id      = 1=pending（等批）2=approved（已批）3=rejected（已拒）
+#   tool_id        = tool.registry.id（邊個工具需要呢個 import，可空）
+# 一次申請 -> 批准 -> 寫 import_permit（正式授權記錄）
+IMPORT_REQUEST_DDL = """
+CREATE TABLE IF NOT EXISTS import_request (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    module_id          INTEGER NOT NULL,      -- taxonomy.registry.id（申請者）
+    imported           TEXT    NOT NULL,      -- 想 import 嘅嘢
+    symbols            TEXT    NOT NULL DEFAULT 'ALL',  -- 想 import 嘅 symbols
+    reason             TEXT,                  -- 點解需要
+    status_id          INTEGER NOT NULL DEFAULT 1,      -- 1=pending 2=approved 3=rejected
+    tool_id            INTEGER,               -- tool.registry.id（需要嘅工具）
+    decided_by         TEXT,                   -- 邊個決定（tool / monitor / admin）
+    created_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    UNIQUE (module_id, imported, symbols)
+);
+"""
 
 __all__ = ["SUBJECT_TYPE_DDL", "DEFAULT_SUBJECT_TYPES", "SUBJECT_DDL",
            "OBJECT_TYPE_DDL", "DEFAULT_OBJECT_TYPES", "OBJECT_DDL",
            "PERMIT_TYPE_DDL", "DEFAULT_PERMIT_TYPES", "PERMIT_DDL",
-           "IMPORT_REGISTRY_DDL", "IMPORT_PERMIT_DDL",
-           "DEFAULT_IMPORT_PERMITS"]
+           "IMPORT_REGISTRY_DDL", "IMPORT_PERMIT_DDL", "IMPORT_REQUEST_DDL"]

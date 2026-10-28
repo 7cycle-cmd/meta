@@ -14,56 +14,170 @@ class SqlStore:
         self.conn.executescript(";\n".join([
             SUBJECT_TYPE_DDL, SUBJECT_DDL, OBJECT_TYPE_DDL, OBJECT_DDL,
             PERMIT_TYPE_DDL, PERMIT_DDL,
-            IMPORT_REGISTRY_DDL, IMPORT_PERMIT_DDL,
+            IMPORT_REGISTRY_DDL, IMPORT_PERMIT_DDL, IMPORT_REQUEST_DDL,
         ]))
         self.conn.commit()
         self._seed_dicts()
-        self._seed_import_permits()
+        self._migrate_import_tables()
+        # 2026-10-28（用戶要求）：唔再有 DEFAULT_IMPORT_PERMITS seed ——
+        # import 授權全部按 need 申請（import_request -> 批准 -> import_permit）。
 
-    def _seed_import_permits(self):
-        """seed import_permit 字典（2026-10-28：合法 import allowlist）
-
-        1. standard library permits（唔限 module）：sqlite3 / json / os / sys。
-           `import sqlite3` = 冇 from ... import *，symbols = ''。
-        2. 每個 module 有權用自己嘅 .schema（module_id = 自己，symbols = 'ALL'）
-        3. common.api / common.skill 等常用跨 module（module_id NULL = 全局）
-        """
-        # 1. 標準庫（任何 module 都准）
-        for symbol, desc in DEFAULT_IMPORT_PERMITS:
-            if symbol == "module.schema":
-                continue
+    def _migrate_import_tables(self):
+        """遷移（幂等）：import_permit 加 granted_by 欄 + import_request 表補建"""
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('import_permit')")}
+        if "granted_by" not in cols:
             self.conn.execute(
-                "INSERT INTO import_permit (module_id, imported, symbols,"
-                " description)"
-                " SELECT NULL, ?, '', ? WHERE NOT EXISTS"
-                " (SELECT 1 FROM import_permit WHERE module_id IS NULL"
-                "  AND imported = ? AND symbols = '')",
-                (symbol, "标准库: %s" % desc, symbol))
-        # 2. 每個 module 自己嘅 .schema（ALL symbols 准）
+                "ALTER TABLE import_permit ADD COLUMN granted_by TEXT")
+            self.conn.commit()
+            print("[permit] import_permit + granted_by 欄")
+        # import_request 表（舊 DB 冇 -> 補建）
+        has = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='import_request'").fetchone()
+        if not has:
+            self.conn.execute(IMPORT_REQUEST_DDL)
+            self.conn.commit()
+            print("[permit] import_request 表建立")
+
+    # ---------- import 申請 / 批准（2026-10-28 用戶：按 need，冇 default）----------
+    # module 有自己 function/skill，需要 import 就申請（import_request 表），
+    # 由 tool（module 工具中心）/ monitor（READ API 中心）批准先寫
+    # import_permit（正式授權）。冇 permit = 擋（check_import_permit）。
+
+    def _module_id(self, module_name):
+        """taxonomy.registry.id by module meta（唔存在返回 None）"""
+        try:
+            import sqlite3 as _sq
+            c = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            try:
+                c.row_factory = _sq.Row
+                r = c.execute(
+                    "SELECT id FROM registry WHERE tree_id = 2"
+                    " AND meta = ? AND is_active = 1", (module_name,)
+                ).fetchone()
+                return r["id"] if r else None
+            finally:
+                c.close()
+        except Exception:
+            return None
+
+    def request_import(self, module_name, imported, symbols="ALL",
+                       reason=None, tool_id=None):
+        """module 申請一個 import（按 need，冇 default）
+
+        module_name = 申請 module 名
+        imported    = 想 import 嘅嘢（'.schema' / 'sqlite3' / 'source.api' ...）
+        symbols     = 想 import 嘅 symbols（'ALL' = 全部 / 單個 symbol）
+        reason      = 點解需要（module 自己講）
+        tool_id     = 邊個工具需要（可選）
+        返回 {"request_id", "status": "pending", "hint"}（第一次申請 = pending）
+        """
+        mid = self._module_id(module_name)
+        if not mid:
+            raise ValueError(f"module '{module_name}' 喺 taxonomy 搵唔到")
+        # 已有 pending / approved -> 攞返
+        existing = self.conn.execute(
+            "SELECT id, status_id FROM import_request"
+            " WHERE module_id = ? AND imported = ? AND symbols = ?",
+            (mid, imported, symbols)).fetchone()
+        if existing:
+            return {"request_id": existing["id"],
+                    "status": {1: "pending", 2: "approved",
+                               3: "rejected"}.get(existing["status_id"]),
+                    "hint": "已申請過"}
+        self.conn.execute(
+            "INSERT INTO import_request"
+            " (module_id, imported, symbols, reason, status_id, tool_id)"
+            " VALUES (?, ?, ?, ?, 1, ?)",
+            (mid, imported, symbols, reason, tool_id))
+        self.conn.commit()
+        r = self.conn.execute(
+            "SELECT id FROM import_request"
+            " WHERE module_id = ? AND imported = ? AND symbols = ?",
+            (mid, imported, symbols)).fetchone()
+        return {"request_id": r["id"] if r else None,
+                "status": "pending",
+                "hint": "申請已提交，等 tool / monitor 批准"}
+
+    def approve_import(self, request_id, decided_by="tool"):
+        """批准一個 import 申請（-> 寫 import_permit 正式授權）
+
+        decided_by = 邊個批（'tool' / 'monitor' / admin module）
+        """
+        r = self.conn.execute(
+            "SELECT * FROM import_request WHERE id = ?", (request_id,)
+        ).fetchone()
+        if not r:
+            return {"error": "申請唔存在"}
+        # 寫入正式 permit
+        self.conn.execute(
+            "INSERT INTO import_permit"
+            " (module_id, imported, symbols, description, granted_by)"
+            " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
+            " (SELECT 1 FROM import_permit"
+            "  WHERE module_id IS ? AND imported = ? AND symbols = ?)",
+            (r["module_id"], r["imported"], r["symbols"], r["reason"],
+             decided_by, r["module_id"], r["imported"], r["symbols"]))
+        self.conn.execute(
+            "UPDATE import_request SET status_id = 2, decided_by = ?,"
+            " updated_at = datetime('now','localtime') WHERE id = ?",
+            (decided_by, request_id))
+        self.conn.commit()
+        return {"approved": True, "request_id": request_id,
+                "permit": f"{r['imported']} {r['symbols']}"}
+
+    def reject_import(self, request_id, decided_by="tool"):
+        """拒絕一個 import 申請"""
+        self.conn.execute(
+            "UPDATE import_request SET status_id = 3, decided_by = ?,"
+            " updated_at = datetime('now','localtime') WHERE id = ?",
+            (decided_by, request_id))
+        self.conn.commit()
+        return {"rejected": True, "request_id": request_id}
+
+    def import_requests(self, module_name=None, status=None,
+                        active_only=True):
+        """列出 import 申請（可按 module / 狀態篩選）
+
+        module_name 由外站 taxonomy.db 反查（permit.db 冇 join）。
+        """
+        # module_name -> module_id（taxonomy.db）
+        mid = None
+        if module_name:
+            mid = self._module_id(module_name)
+            if not mid:
+                return []
+        sql = "SELECT * FROM import_request"
+        args = []
+        conds = []
+        if mid:
+            conds.append("module_id = ?")
+            args.append(mid)
+        if status:
+            conds.append("status_id = ?")
+            args.append(status)
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+        sql += " ORDER BY id"
+        rows = [dict(r) for r in self.conn.execute(sql, args)]
+        # 補 module 名（taxonomy.db 反查）
         try:
             import sqlite3 as _sq
             tc = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
             try:
                 tc.row_factory = _sq.Row
-                mods = [r["id"] for r in tc.execute(
-                    "SELECT id FROM registry WHERE tree_id = 2"
-                    " AND is_active = 1")]
-                for mid in mods:
-                    self.conn.execute(
-                        "INSERT INTO import_permit"
-                        " (module_id, imported, symbols, description)"
-                        " SELECT ?, '.schema', 'ALL',"
-                        " 'module 自己嘅 schema（顯式 import）'"
-                        " WHERE NOT EXISTS"
-                        " (SELECT 1 FROM import_permit"
-                        "  WHERE module_id = ? AND imported = '.schema'"
-                        "  AND symbols = 'ALL')",
-                        (mid, mid))
+                names = {}
+                for r in tc.execute(
+                        "SELECT id, meta FROM registry WHERE tree_id = 2"):
+                    names[r["id"]] = r["meta"]
             finally:
                 tc.close()
+            for r in rows:
+                r["module"] = names.get(r["module_id"])
         except Exception:
             pass
-        self.conn.commit()
+        return rows
 
     # ---------- import_permit（2026-10-28 用戶：worker 唔可以靠 import 逃工）----------
 

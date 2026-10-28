@@ -49,6 +49,25 @@ class Permit:
         """檢查 module 有冇權 import（allowlist 之外 = 擋）"""
         return self.store.check_import_permit(module_name, imported, symbols)
 
+    # ---------- import 申請（2026-10-28 用戶：按 need，冇 default）----------
+    def request_import(self, module_name, imported, symbols="ALL",
+                       reason=None, tool_id=None):
+        """module 申請 import（-> pending，等 tool/monitor 批）"""
+        return self.store.request_import(module_name, imported, symbols,
+                                          reason, tool_id)
+
+    def approve_import(self, request_id, decided_by="tool"):
+        """批准申請（-> import_permit 正式授權）"""
+        return self.store.approve_import(request_id, decided_by)
+
+    def reject_import(self, request_id, decided_by="tool"):
+        """拒絕申請"""
+        return self.store.reject_import(request_id, decided_by)
+
+    def import_requests(self, module_name=None, status=None):
+        """列出申請"""
+        return self.store.import_requests(module_name, status)
+
     def register_import(self, module_name, imported, symbols="*"):
         """登記 import（冇 permit 會 raise PermissionError）"""
         return self.store.register_import(module_name, imported, symbols)
