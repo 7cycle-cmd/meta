@@ -10,7 +10,6 @@ industry = 行業字典（例如 information technology）
 import sqlite3
 
 from .schema import *  # noqa: F401,E402
-
 DB_PATH = r"C:\projects\meta\source\source.db"
 
 
@@ -37,6 +36,8 @@ class SqlStore:
         # 2026-10-28：Postman 真實數據表（官方 API 拉取證據）
         self.conn.execute(POSTMAN_SYNC_DDL)
         self.conn.execute(POSTMAN_MOCK_DDL)
+        self.conn.execute(POSTMAN_MOCK_SERVER_DDL)
+        self.conn.execute(POSTMAN_MOCK_EXEC_DDL)
         self.conn.execute(POSTMAN_RUN_DDL)
         # 2026-10-24p：字典表（symbol/english/INT/language/data_format/
         # industry/authority_level）已搬去 terminology —— source 唔再建
@@ -791,10 +792,26 @@ class SqlStore:
             "SELECT * FROM postman_run ORDER BY id DESC LIMIT ?",
             (limit,)).fetchall()]
 
+    def postman_mock_servers(self, active_only=True):
+        """mock server 實體清單（owner + 定義）"""
+        sql = "SELECT * FROM postman_mock_server"
+        if active_only:
+            sql += " WHERE is_public = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.conn.execute(sql)]
+
+    def postman_mock_execs(self, limit=100):
+        """真實執行記錄（x_srv_trace 證明）"""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM postman_mock_exec ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()]
+
     def postman_stats(self):
-        """證據統計（sync / mock log / run 各自幾多條）"""
+        """證據統計（sync / mock / run 各自幾多條）"""
         out = {}
         for name, table in (("sync", "postman_sync"),
+                            ("mock_server", "postman_mock_server"),
+                            ("mock_exec", "postman_mock_exec"),
                             ("mock", "postman_mock"),
                             ("run", "postman_run")):
             c = self.conn.execute(

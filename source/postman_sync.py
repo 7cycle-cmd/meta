@@ -22,6 +22,7 @@ import urllib.parse
 import urllib.request
 
 from .schema import (POSTMAN_SYNC_DDL, POSTMAN_MOCK_DDL,  # noqa: F401
+                     POSTMAN_MOCK_SERVER_DDL, POSTMAN_MOCK_EXEC_DDL,
                      POSTMAN_RUN_DDL)
 from .sql import SqlStore
 
@@ -95,7 +96,9 @@ class PostmanSync:
 
     def __init__(self, db_path=None):
         self.store = SqlStore(db_path) if db_path else SqlStore()
-        for ddl in (POSTMAN_SYNC_DDL, POSTMAN_MOCK_DDL, POSTMAN_RUN_DDL):
+        for ddl in (POSTMAN_SYNC_DDL, POSTMAN_MOCK_DDL,
+                    POSTMAN_MOCK_SERVER_DDL, POSTMAN_MOCK_EXEC_DDL,
+                    POSTMAN_RUN_DDL):
             self.store.conn.execute(ddl)
         self.store.conn.commit()
 
@@ -176,14 +179,102 @@ class PostmanSync:
             uid=workspace_uid)
         return sid, status, data
 
-    def mock_responses(self, mock_uid):
-        """拉 mock server 嘅真實執行 log（server responses）——
-        呢啲係 Postman 平台記錄嘅實際請求/回應，**唔係我哋生成**。"""
+    def register_mock_server(self, mock=None, owner=None, owner_name=None):
+        """登記 mock server 實體（proof：mock 真係存在喺 Postman 平台）
+
+        mock = mock detail dict（/mocks/{bare_id} 返回嘅 "mock"）
+        owner = Postman account user id（/me API）；owner_name = username
+        冪等：mock_uid UNIQUE。
+        """
+        if not mock:
+            return None
+        mock_uid = mock.get("uid")
+        if not mock_uid:
+            return None
+        existing = self.store.conn.execute(
+            "SELECT id FROM postman_mock_server WHERE mock_uid = ?",
+            (mock_uid,)).fetchone()
+        if existing:
+            # 更新 owner / name（唔重複插入）
+            self.store.conn.execute(
+                "UPDATE postman_mock_server SET name = ?, mock_url = ?,"
+                " is_public = ?, owner = ?, owner_name = ?"
+                " WHERE id = ?",
+                (mock.get("name"), mock.get("mockUrl"),
+                 1 if mock.get("isPublic") else 0,
+                 owner, owner_name, existing["id"]))
+            self.store.conn.commit()
+            return existing["id"]
+        cur = self.store.conn.execute(
+            "INSERT INTO postman_mock_server"
+            " (mock_uid, mock_bare_id, name, mock_url, collection_uid,"
+            "  environment_uid, is_public, owner, owner_name, source_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (mock_uid, mock.get("id"), mock.get("name"),
+             mock.get("mockUrl"), mock.get("collection"),
+             mock.get("environment"),
+             1 if mock.get("isPublic") else 0,
+             owner, owner_name, SOURCE_ID_POSTMAN_API))
+        self.store.conn.commit()
+        return cur.lastrowid
+
+    def sync_mock_server(self, mock_uid):
+        """完整同步一個 mock：detail（登記 server）+ 平台 log"""
         if not mock_uid:
             return None, 0, None
+        bare = mock_uid.split("-", 1)[1] if "-" in mock_uid \
+            and mock_uid.split("-", 1)[0].isdigit() else mock_uid
         sid, status, data = self._fetch(
-            "mock_responses", f"/mocks/{urllib.parse.quote(mock_uid)}/server-responses",
-            uid=mock_uid)
+            "mock_detail", f"/mocks/{urllib.parse.quote(bare)}", uid=bare)
+        if status == 200 and isinstance(data, dict):
+            mock = data.get("mock", {})
+            try:
+                me = self.get_me()
+                owner = str(me.get("user", {}).get("id", "")) if me else None
+                owner_name = me.get("user", {}).get("username") if me else None
+            except Exception:
+                owner = owner_name = None
+            self.register_mock_server(mock, owner=owner, owner_name=owner_name)
+        return sid, status, data
+
+    def get_me(self):
+        """拉 account 資料（owner 證明：user id + username）"""
+        sid, status, data = self._fetch("me", "/me", note="account owner")
+        return data if status == 200 else None
+
+    def record_exec(self, server_id, method, path, http_status,
+                    response_body=None, x_srv_trace=None, x_srv_span=None,
+                    cf_ray=None, server_date=None):
+        """記錄一次真實執行（verify：即時捕捉，x_srv_trace 不可偽造）
+
+        執行瞬間由 Postman mock 平台回應 -> 即刻寫入
+        （唔需要等平台 log 先算證據）
+        """
+        cur = self.store.conn.execute(
+            "INSERT INTO postman_mock_exec"
+            " (server_id, method, path, http_status, response_body,"
+            "  x_srv_trace, x_srv_span, cf_ray, server_date)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (server_id, method, path, http_status, response_body,
+             x_srv_trace, x_srv_span, cf_ray, server_date))
+        self.store.conn.commit()
+        return cur.lastrowid
+
+    def mock_responses(self, mock_uid):
+        """拉 mock server 嘅真實執行 log（server responses）——
+        呢啲係 Postman 平台記錄嘅實際請求/回應，**唔係我哋生成**。
+
+        2026-10-28（實測）：mock API 用 **bare id**（唔帶 owner 前綴），
+        例如 387d2903-6d95-408b-a15c-339f14ef6b63（唔係 59268432-...）。
+        """
+        if not mock_uid:
+            return None, 0, None
+        # bare id：去掉 owner 前綴（'59268432-'），API 實測只認 bare id
+        bare = mock_uid.split("-", 1)[1] if "-" in mock_uid \
+            and mock_uid.split("-", 1)[0].isdigit() else mock_uid
+        sid, status, data = self._fetch(
+            "mock_responses", f"/mocks/{urllib.parse.quote(bare)}/server-responses",
+            uid=bare)
         if status == 200 and isinstance(data, dict):
             self._store_mock_logs(sid, data)
         return sid, status, data
@@ -280,7 +371,9 @@ def main(argv=None):
         description="Postman 官方 API 真實數據同步（證據 = Postman 平台記錄）")
     ap.add_argument("--workspace", default="2b2010a3-aed6-484e-860a-250fb53a401e")
     ap.add_argument("--environment", default="59268432-80931d99-1bff-4628-9b72-af5e73772ad5")
-    ap.add_argument("--mock", help="mock server UID（如有）")
+    ap.add_argument("--mock", help="mock server UID（如 59268432-387d...）")
+    ap.add_argument("--quick", action="store_true",
+                    help="快速：只同步定義（workspace+collection+env+mock server）")
     args = ap.parse_args(argv)
 
     try:
@@ -290,6 +383,13 @@ def main(argv=None):
         return 2
 
     try:
+        # account owner（/me）—— owner 證明
+        me = ps.get_me()
+        if me:
+            u = me.get("user", {})
+            print(f"[account] id={u.get('id')} username={u.get('username')}"
+                  f" team={u.get('teamName')}")
+
         sid, status, data = ps.workspace(args.workspace)
         print(f"[workspace] http={status} sync_id={sid}")
         if isinstance(data, dict) and data.get("workspace"):
@@ -304,31 +404,48 @@ def main(argv=None):
             print("  name:", e.get("name"))
             print("  values:", len(e.get("values", [])))
 
-        sid, status, data = ps.mock_servers(args.workspace)
-        print(f"[mock list] http={status} sync_id={sid}")
+        # collections 真實定義
+        sid, status, data = ps.collections(workspace_uid=args.workspace)
+        print(f"[collections] http={status} sync_id={sid}")
         if status == 200 and isinstance(data, dict):
-            mocks = data.get("mocks", [])
-            print("  mocks:", len(mocks))
-            for m in mocks[:5]:
-                print("   -", m.get("name"), m.get("mockUid") or m.get("id"))
-                # 真正執行記錄（平台 log）——
-                muid = m.get("mockUid") or m.get("id")
-                if args.mock or len(mocks) == 1:
-                    msid, mstatus, mdata = ps.mock_responses(muid)
-                    print(f"    [server-responses] http={mstatus} sync_id={msid}"
-                          f" logs={len(mdata.get('serverResponses', [])) if isinstance(mdata, dict) else 0}")
+            cols = data.get("collections", [])
+            print("  collections:", len(cols))
+            for c in cols:
+                cuid = c.get("uid") or c.get("id")
+                csid, cst, cdata = ps.collection(cuid)
+                print(f"   - {c.get('name')} ({cuid}) http={cst} sync_id={csid}")
 
-        sid, status, data = ps.runs()
-        print(f"[runs] http={status} sync_id={sid}")
-        if status == 200 and isinstance(data, dict):
-            runs = data.get("runs", [])
-            print("  runs:", len(runs))
-            for r in runs[:5]:
-                print("   -", r.get("id"), r.get("status"),
-                      f"pass={r.get('totalPassed')} fail={r.get('totalFailed')}")
+        # mock server：detail + 登記（owner proof）
+        if args.mock:
+            msid, mst, mdata = ps.sync_mock_server(args.mock)
+            print(f"[mock server] http={mst} sync_id={msid}")
+            if mst == 200 and isinstance(mdata, dict):
+                m = mdata.get("mock", {})
+                print(f"   name={m.get('name')} url={m.get('mockUrl')}")
+                srv = ps.store.conn.execute(
+                    "SELECT id, owner, owner_name FROM postman_mock_server"
+                    " WHERE mock_uid = ?", (m.get("uid"),)).fetchone()
+                if srv:
+                    print(f"   server_id={srv['id']} owner={srv['owner']}"
+                          f" owner_name={srv['owner_name']}")
 
-        print("\n完成 —— 全部原始記錄已存入 source.db:")
-        print("  postman_sync（原始返回） + postman_mock（執行 log） + postman_run（run 結果）")
+        if not args.quick:
+            sid, status, data = ps.runs()
+            print(f"[runs] http={status} sync_id={sid}")
+            if status == 200 and isinstance(data, dict):
+                runs = data.get("runs", [])
+                print("  runs:", len(runs))
+                for r in runs[:5]:
+                    print("   -", r.get("id"), r.get("status"),
+                          f"pass={r.get('totalPassed')} fail={r.get('totalFailed')}")
+
+        stats = ps.store.postman_stats()
+        print(f"\n完成 —— source.db 證據統計:")
+        print(f"  postman_sync（原始返回）: {stats['sync']}")
+        print(f"  postman_mock_server（mock 實體）: {stats['mock_server']}")
+        print(f"  postman_mock_exec（即時執行證明）: {stats['mock_exec']}")
+        print(f"  postman_mock（平台 log）: {stats['mock']}")
+        print(f"  postman_run（run 結果）: {stats['run']}")
         print("  證據來源 = Postman 官方 API（api.postman.com），唔係 agent 生成。")
     except ValueError as e:
         print(e)

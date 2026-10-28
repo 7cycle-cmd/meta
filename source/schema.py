@@ -241,6 +241,48 @@ CREATE TABLE IF NOT EXISTS postman_mock (
 );
 """
 
+# postman_mock_server：mock server 實體（1 行 per mock，2026-10-28）
+# owner       -> 外部 owner：Postman account user id（由 /me API 攞）
+# owner_name  -> Postman username（cyclegithub）
+# 用途 = proof（證明 mock server 真係存在喺 Postman 平台）
+POSTMAN_MOCK_SERVER_DDL = """
+CREATE TABLE IF NOT EXISTS postman_mock_server (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    mock_uid        TEXT    NOT NULL UNIQUE,   -- Postman UID（59268432-...）
+    mock_bare_id    TEXT,                       -- API 用 bare id（387d2903-...）
+    name            TEXT    NOT NULL,           -- mock 名（meta-evidence-mock）
+    mock_url        TEXT    NOT NULL,           -- https://xxx.mock.pstmn.io
+    collection_uid  TEXT,                       -- 綁定嘅 collection
+    environment_uid TEXT,                       -- 綁定嘅 environment
+    is_public       INTEGER NOT NULL DEFAULT 1,
+    owner           TEXT,                       -- Postman user id（59268432）
+    owner_name      TEXT,                       -- Postman username（cyclegithub）
+    source_id       INTEGER,                    -- source.id（15 = Postman API）
+    synced_at       TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# postman_mock_exec：每次真實執行（即時捕捉，2026-10-28）
+# x_srv_trace / x_srv_span / cf_ray = Postman mock 平台 + Cloudflare
+# 直接發出嘅執行追蹤 ID —— 唔可以偽造，證明「真係經 Postman 平台執行」
+# 用途 = verify（驗證 rest_api 行為真係發生過）
+POSTMAN_MOCK_EXEC_DDL = """
+CREATE TABLE IF NOT EXISTS postman_mock_exec (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id      INTEGER NOT NULL,   -- postman_mock_server.id
+    method         TEXT    NOT NULL,   -- GET / POST ...
+    path           TEXT    NOT NULL,   -- /get?run=meta-proof-1
+    http_status    INTEGER NOT NULL,   -- 200 / 404 ...
+    response_body  TEXT,               -- 實際回應 body（真實）
+    x_srv_trace    TEXT,               -- 平台執行 ID（不可偽造）
+    x_srv_span     TEXT,
+    cf_ray         TEXT,               -- Cloudflare ray ID
+    server_date    TEXT,               -- 平台 Date header
+    captured_at    TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (server_id) REFERENCES postman_mock_server(id)
+);
+"""
+
 # postman_run：Runner / Cloud Run 真實執行結果
 # run_uid        -> Postman run ID
 # collection_uid -> 邊個 collection 被執行
@@ -272,4 +314,5 @@ __all__ = ['SOURCE_TABLE_DDL', 'PROVIDER_TABLE_DDL',
            'API_TYPE_DDL', 'API_DDL', 'FLOW_DDL', 'SEQ_DDL', 'STEP_DDL',
            'STATUS_DDL', 'RUN_DDL', 'RESULT_DDL', 'SOURCE_PROOF_DDL',
            'VALUE_DDL', 'POSTMAN_SYNC_DDL', 'POSTMAN_MOCK_DDL',
+           'POSTMAN_MOCK_SERVER_DDL', 'POSTMAN_MOCK_EXEC_DDL',
            'POSTMAN_RUN_DDL']
