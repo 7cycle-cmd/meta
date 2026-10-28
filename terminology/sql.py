@@ -408,6 +408,7 @@ class SqlStore:
         self._migrate_migration_flows()
         self._migrate_questions_6x2()
         self._migrate_expected_source_value_id()
+        self._migrate_drop_formula_cutter_id()
         self._migrate_question_expected_source_id()
         self._seed_step_input()
         self._migrate_source_register_defaults()
@@ -1064,6 +1065,34 @@ class SqlStore:
             self.conn.commit()
             print(f"[migrate] expected_source value_id 回填：{len(rows)} 行")
 
+    def _migrate_drop_formula_cutter_id(self):
+        """遷移（幂等）：expected_source 移除 formula_cutter_id 欄（2026-10-28 用戶）
+
+        SQLite 唔支援 DROP COLUMN（舊版）—— 重建表（有資料保留，
+        formula_cutter_id 全 NULL 可安全重建）。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('expected_source')")}
+        if "formula_cutter_id" not in cols:
+            return
+        rows = [dict(r) for r in self.conn.execute(
+            "SELECT * FROM expected_source ORDER BY id")]
+        self.conn.execute("DROP TABLE expected_source")
+        self.conn.execute(EXPECTED_SOURCE_DDL)
+        for r in rows:
+            self.conn.execute(
+                "INSERT INTO expected_source"
+                " (id, question_id, formula_id, value, value_id,"
+                "  output_format, is_active, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (r["id"], r["question_id"], r["formula_id"], r["value"],
+                 r.get("value_id"), r.get("output_format", "1,0"),
+                 r.get("is_active", 1), r.get("created_at"),
+                 r.get("updated_at") or r.get("created_at")))
+        self.conn.commit()
+        print(f"[migrate] expected_source 重建（移除 formula_cutter_id）："
+              f"{len(rows)} 行保留")
+
     def _migrate_question_expected_source_id(self):
         """遷移（幂等）：question 加 expected_source_id 欄（2026-10-28 用戶要求）
 
@@ -1356,16 +1385,14 @@ class SqlStore:
                 "by_module": by_module}
 
     def set_expected_source(self, question_id, formula_id=None,
-                            formula_cutter_id=None, value=None,
-                            output_format="1,0", value_id=None):
+                            value=None, output_format="1,0", value_id=None):
         """設定一條 question 嘅期望值來源（Table-driven，冪等）
 
-        question_id       = terminology.question.id
-        formula_id        = template.formula.id（blackbox 公式，執行出期望）
-        formula_cutter_id = formula_cuter.id（切粒定位，improve 用）
-        value             = 期望值（formula 執行結果 / 直接值）
-        value_id          = value.db value.id（proof at db；value 自動登記）
-        output_format     = 輸出格式（1,0 boolean）
+        question_id   = terminology.question.id
+        formula_id    = template.formula.id（blackbox 公式，執行出期望）
+        value         = 期望值（formula 執行結果 / 直接值）
+        value_id      = value.db value.id（proof at db；value 自動登記）
+        output_format = 輸出格式（1,0 boolean）
         """
         if value_id is None and value is not None:
             value_id = self.add_value(value)
@@ -1375,19 +1402,18 @@ class SqlStore:
             " AND formula_id IS ?", (question_id, formula_id)).fetchone()
         if has:
             self.conn.execute(
-                "UPDATE expected_source SET formula_cutter_id = ?,"
+                "UPDATE expected_source SET"
                 " value = ?, value_id = ?, output_format = ?, updated_at ="
                 " datetime('now','localtime') WHERE id = ?",
-                (formula_cutter_id, value, value_id, output_format,
-                 has["id"]))
+                (value, value_id, output_format, has["id"]))
             rid = has["id"]
         else:
             cur = self.conn.execute(
                 "INSERT INTO expected_source"
-                " (question_id, formula_id, formula_cutter_id, value,"
+                " (question_id, formula_id, value,"
                 "  value_id, output_format)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (question_id, formula_id, formula_cutter_id, value,
+                " VALUES (?, ?, ?, ?, ?)",
+                (question_id, formula_id, value,
                  value_id, output_format))
             rid = cur.lastrowid
         self.conn.commit()

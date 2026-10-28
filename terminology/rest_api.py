@@ -393,8 +393,6 @@ class ApiHandler(BaseHTTPRequestHandler):
                             int(qid),
                             int(qs["formula_id"]) if qs.get("formula_id")
                             else None,
-                            int(qs["formula_cutter_id"])
-                            if qs.get("formula_cutter_id") else None,
                             qs.get("value"),
                             qs.get("output_format", "1,0"))
                         self._send(200, {"expected_source_id": esid,

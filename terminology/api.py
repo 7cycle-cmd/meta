@@ -158,11 +158,10 @@ class Terminology:
     # ---------- expected_source / step_output（2026-10-28 用戶設計）----------
 
     def set_expected_source(self, question_id, formula_id=None,
-                            formula_cutter_id=None, value=None,
-                            output_format="1,0"):
+                            value=None, output_format="1,0"):
         """設定一條 question 嘅期望值來源（Table-driven，冪等）"""
         return self.store.set_expected_source(
-            question_id, formula_id, formula_cutter_id, value, output_format)
+            question_id, formula_id, value, output_format)
 
     def build_expected_sources(self, source_module=None):
         """由 question 逐個建 expected_source（step_input 表話事攞 *_id）"""

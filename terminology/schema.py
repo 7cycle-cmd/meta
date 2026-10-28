@@ -257,17 +257,17 @@ CREATE TABLE IF NOT EXISTS status (
 # expected_source：期望值來源（Table-driven，blackbox code = formula）
 #   question_id   = terminology.question.id
 #   formula_id    = template.formula.id（執行 blackbox 公式 -> 得到期望 value）
-#   formula_cutter_id = template.formula_cuter.id（公式切粒定位，improve 用）
 #   value         = 期望值（formula 執行結果 / 直接值）
+#   value_id      = value.db value.id（proof at db，2026-10-28）
 #   output_format = 輸出格式（預設 '1,0'：boolean 化）
 # 鏈：value -> condition_id * 5W2H * operator(yes>==, no>!=)
 #           -> expected_source -> output_format = 1,0
+# 2026-10-28（用戶）：移除 formula_cutter_id（公式切粒定位已冇用）
 EXPECTED_SOURCE_DDL = """
 CREATE TABLE IF NOT EXISTS expected_source (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     question_id       INTEGER NOT NULL,      -- terminology.question.id
     formula_id        INTEGER,               -- template.formula.id（blackbox 來源）
-    formula_cutter_id INTEGER,               -- template.formula_cuter.id（切粒定位，可選）
     value             TEXT,                   -- 期望值（formula 執行結果 / 直接值）
     value_id          INTEGER,               -- value.db value.id（proof at db，2026-10-28）
     output_format     TEXT NOT NULL DEFAULT '1,0',  -- 輸出格式（1,0 boolean）
