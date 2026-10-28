@@ -227,6 +227,7 @@ class SqlStore:
         # 真實登記「terminology 用咗邊啲 schema」（由已批 import_permit 逐個
         # 寫入 resource.registry + structure_resource，AST 掃真實行號）。
         self._register_resource_schemas()
+        self._register_resource_functions()
 
     # ---------- resource.registry / structure_resource 真實登記（2026-10-28）----------
     # terminology 啟動建表 = 真係用咗呢 26 個 schema symbol（有 import permit）。
@@ -373,6 +374,100 @@ class SqlStore:
                         " WHERE sm.module_id = ? AND sm.value = ?"
                         " AND st.meta = 'file' ORDER BY sm.id LIMIT 1",
                         (module_id, value)).fetchone()
+                return r["id"] if r else None
+            finally:
+                _c.close()
+        except Exception:
+            return None
+
+    def _register_resource_functions(self):
+        """登記已用 function 到 resource.registry + structure_resource（冪等）
+
+        2026-10-28（用戶要求）：expected_source 嘅 function 都要 registry——
+        terminology 用緊嘅 function（set_expected_source / build_expected_sources /
+        add_value / expected_sources 等）同 schema 一樣要喺
+        resource.registry（type=function）+ structure_resource（type=function）
+        有物理位置（AST 掃 sql.py 真實行號）。
+        """
+        try:
+            import sqlite3 as _sq
+            import os as _os
+            import importlib.util as _ilu
+            _ast_sp = _ilu.spec_from_file_location(
+                "_stdlib_ast",
+                _os.path.join(_os.path.dirname(_os.__file__), "ast.py"))
+            _ast_m = _ilu.module_from_spec(_ast_sp)
+            _ast_sp.loader.exec_module(_ast_m)
+        except Exception:
+            return
+        # taxonomy module id（terminology）
+        mid = self._taxonomy_id_of("terminology")
+        if not mid:
+            return
+        # AST 掃 terminology/sql.py + api.py 攞 public function -> 真實行號
+        # （頂層 function + class 方法都算——set_expected_source 等係 class 方法）
+        funcs = {}          # name -> (line, file)
+        for pyfile in ("sql.py", "api.py"):
+            try:
+                with open(rf"C:\projects\meta\terminology\{pyfile}", "r",
+                          encoding="utf-8") as f:
+                    tree = _ast_m.parse(f.read())
+                for node in _ast_m.walk(tree):
+                    if isinstance(node, (_ast_m.FunctionDef,
+                                         _ast_m.AsyncFunctionDef)):
+                        if node.name.startswith("_"):
+                            continue
+                        # 方法名 -> (行號, 檔名)（class 方法都記）
+                        if node.name not in funcs:
+                            funcs[node.name] = (node.lineno, pyfile)
+            except (OSError, SyntaxError):
+                continue
+        try:
+            from resource import Resource as _R
+            _rs = _R()
+            try:
+                from structure import Structure as _S
+                _st = _S()
+                try:
+                    package_id = self._structure_module_id(mid, None)
+                    file_id_sql = self._structure_module_id(mid, "sql.py")
+                    file_id_api = self._structure_module_id(mid, "api.py")
+                    n = 0
+                    for fname, (line, pyfile) in funcs.items():
+                        # resource.registry（type=function）
+                        _rs.register(
+                            "function", f"{pyfile}:{fname}",
+                            source_file=f"terminology/{pyfile}",
+                            source_line_start=line)
+                        # structure_resource（type=function，真實 file_id）
+                        if package_id:
+                            fid = file_id_api if pyfile == "api.py" \
+                                else file_id_sql
+                            _st.add_structure_resource(
+                                _st.resource_type_id("function"),
+                                fname, package_id,
+                                line_number=line, file_id=fid)
+                        n += 1
+                finally:
+                    _st.close()
+            finally:
+                _rs.close()
+        except Exception:
+            return
+        if n:
+            print(f"[terminology] resource.registry 真實登記：{n} 個 function"
+                  f"（AST 掃 sql.py + api.py）")
+
+    def _taxonomy_id_of(self, meta):
+        """taxonomy.registry.id by meta（零 hardcode）"""
+        try:
+            import sqlite3 as _sq
+            _c = _sq.connect(r"C:\projects\meta\taxonomy\taxonomy.db")
+            try:
+                _c.row_factory = _sq.Row
+                r = _c.execute(
+                    "SELECT id FROM registry WHERE tree_id = 2"
+                    " AND meta = ? AND is_active = 1", (meta,)).fetchone()
                 return r["id"] if r else None
             finally:
                 _c.close()
