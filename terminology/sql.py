@@ -407,6 +407,7 @@ class SqlStore:
         self._migrate_migration_flows()
         self._migrate_questions_6x2()
         self._migrate_expected_source_value_id()
+        self._migrate_question_expected_source_id()
         self._seed_step_input()
         self._migrate_source_register_defaults()
         self._migrate_value_taxonomy_id()
@@ -1045,6 +1046,36 @@ class SqlStore:
                     (vid, r["id"]))
             self.conn.commit()
             print(f"[migrate] expected_source value_id 回填：{len(rows)} 行")
+
+    def _migrate_question_expected_source_id(self):
+        """遷移（幂等）：question 加 expected_source_id 欄（2026-10-28 用戶要求）
+
+        用戶：「table : question + field : expected_source_id」
+        question 直接指住期望值來源（expected_source.id），
+        唔再靠 expected_source.question_id 反查。
+        回填：現有 expected_source（有 question_id 嘅）寫返落 question。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('question')")}
+        if "expected_source_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE question ADD COLUMN expected_source_id INTEGER")
+            self.conn.commit()
+            print("[migrate] question + expected_source_id 欄")
+        # 回填：expected_source.question_id -> question.expected_source_id
+        rows = self.conn.execute(
+            "SELECT es.id AS esid, es.question_id FROM expected_source es"
+            " WHERE es.question_id IS NOT NULL").fetchall()
+        n = 0
+        for r in rows:
+            cur = self.conn.execute(
+                "UPDATE question SET expected_source_id = ?"
+                " WHERE id = ? AND expected_source_id IS NULL",
+                (r["esid"], r["question_id"]))
+            n += cur.rowcount
+        self.conn.commit()
+        if n:
+            print(f"[migrate] question.expected_source_id 回填：{n} 行")
 
     def _seed_step_input(self):
         """遷移（幂等）：step_input seed（2026-10-28 用戶設計）
@@ -2822,7 +2853,9 @@ class SqlStore:
                         q.operator_id, cz.meta AS operator_meta,
                         cz.expression AS operator_expression,
                         q.expected_id, e.boolean_id AS expected_boolean_id,
-                        e.description AS expected_description
+                        e.description AS expected_description,
+                        q.expected_source_id, es.value AS expected_source_value,
+                        es.value_id AS expected_source_value_id
                  FROM step s
                  JOIN flow f ON f.id = s.flow_id
                  LEFT JOIN seq sq ON sq.id = s.seq_id
@@ -2831,6 +2864,7 @@ class SqlStore:
                  LEFT JOIN "5W2H" w ON w.id = q."5w2h_id"
                  LEFT JOIN operator cz ON cz.id = q.operator_id
                  LEFT JOIN expected e ON e.id = q.expected_id
+                 LEFT JOIN expected_source es ON es.id = q.expected_source_id
                  WHERE f.flow_name = ?"""
         args = (flow_name,)
         if active_only:

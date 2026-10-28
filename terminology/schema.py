@@ -213,14 +213,15 @@ CREATE TABLE IF NOT EXISTS answer (
 
 QUESTION_DDL = """
 CREATE TABLE IF NOT EXISTS question (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    condition_id   INTEGER NOT NULL,       -- condition.id（判斷條件）
-    "5w2h_id"      INTEGER NOT NULL,
-    operator_id    INTEGER,
-    expected_id    INTEGER,
-    is_active      BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
-    created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-    updated_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    condition_id        INTEGER NOT NULL,       -- condition.id（判斷條件）
+    "5w2h_id"           INTEGER NOT NULL,
+    operator_id         INTEGER,
+    expected_id         INTEGER,
+    expected_source_id  INTEGER,                -- expected_source.id（期望值來源，2026-10-28）
+    is_active           BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
+    updated_at          TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     UNIQUE (condition_id, "5w2h_id", operator_id, expected_id)
 );
 """
