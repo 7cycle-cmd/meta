@@ -386,6 +386,7 @@ class SqlStore:
         self._migrate_proof_flows()
         self._migrate_split_flow()
         self._migrate_migration_flow()
+        self._migrate_migration_flows()
         self._seed_step_input()
         self._migrate_source_register_defaults()
         self._migrate_value_taxonomy_id()
@@ -734,6 +735,136 @@ class SqlStore:
                 (fid, qid, seq, fid, seq))
         self.conn.commit()
         print("[migrate] split_value flow + 7 步就緒")
+
+    def _migrate_migration_flows(self):
+        """遷移（幂等）：5 條 migrate_* flow 入 terminology.db（2026-10-28 用戶要求）
+
+        用戶：「i found flow and step at module migration not at terminology!!」
+        之前 5 條 flow（schema/seed/sync/cutover/other × 30 步）只喺 migration.db，
+        terminology.db 得 migration_audit 1 條 -> worker 揀唔到 flow。
+
+        呢度將 5 條 migrate_* flow（flow + condition + question + step）全部
+        登記埋 terminology.db。30 步 -> step_input 7 維度逐維填（點對點證明）。
+
+        冪等：flow_name UNIQUE + condition.meta UNIQUE + step UNIQUE(flow_id, seq_id)
+        """
+        # 5 條 flow：flow_name -> [(step index, 5w2h dimension, 動作)]（5W2H 完整 7 維度）
+        # 全部 30 步用真實 5W2H 7 維度（what/where/when/who/why/how/how much）
+        flows = {
+            "migrate_schema": [
+                ("inspect_table", "what", "table 名 -> 現有欄位清單（PRAGMA table_info）"),
+                ("check_column", "where", "欄位名 -> 欄位存在/唔存在（0/1）"),
+                ("add_column", "how", "欄位名 + 型別 -> ALTER TABLE 完成"),
+                ("backfill_column", "who", "舊資料 + 新欄 -> 回填行數"),
+                ("verify_column", "why", "新欄位名 -> PRAGMA 確認欄位存在"),
+                ("verify_rowcount", "how much", "表名 -> 行數零損失確認"),
+                ("report", "when", "全部結果 -> migration 報告"),
+            ],
+            "migrate_seed": [
+                ("check_dictionary", "what", "字典表名 -> 現有值清單"),
+                ("check_symbol", "where", "symbol 名 -> 已存在/未存在（0/1）"),
+                ("insert_symbol", "how", "symbol + description -> INSERT 完成（冪等）"),
+                ("verify_symbol", "why", "symbol 名 -> SELECT 確認存在"),
+                ("report", "when", "全部結果 -> seed 報告"),
+            ],
+            "migrate_sync": [
+                ("check_source", "what", "來源名 -> 現有記錄"),
+                ("fetch_external", "where", "外部 API URL -> 原始返回（raw_json）"),
+                ("map_to_local", "how", "原始數據 -> 本地結構映射"),
+                ("upsert_local", "who", "映射後數據 -> INSERT/UPDATE 完成（冪等）"),
+                ("verify_count", "how much", "表名 -> 新增/更新行數"),
+                ("report", "when", "全部結果 -> sync 報告"),
+            ],
+            "migrate_cutover": [
+                ("backup_table", "what", "表名 -> 備份完成"),
+                ("create_new_table", "where", "新 DDL -> 新表建立"),
+                ("copy_rows", "how", "舊表 -> 新表 -> 複製行數"),
+                ("verify_rowcount", "how much", "新舊表 -> 行數對比（零損失）"),
+                ("swap_table", "who", "新表名 -> RENAME 完成"),
+                ("verify_foreign_keys", "why", "表名 -> foreign_key_check 乾淨"),
+                ("report", "when", "全部結果 -> cutover 報告"),
+            ],
+            "migrate_other": [
+                ("inspect", "what", "描述 -> 現狀"),
+                ("action", "how", "輸入 -> 輸出"),
+                ("verify", "how much", "預期 -> 實際"),
+                ("report", "when", "全部結果 -> 報告"),
+            ],
+        }
+        # condition：migration（migrate_* 全部共享一個 condition，5W2H 7 維度）
+        self.conn.execute(
+            "INSERT INTO condition (meta)"
+            " SELECT 'migration' WHERE NOT EXISTS"
+            " (SELECT 1 FROM condition WHERE meta = 'migration')")
+        crow = self.conn.execute(
+            "SELECT id FROM condition WHERE meta = 'migration'").fetchone()
+        if not crow:
+            return
+        cid = crow["id"]
+        exp_true = self.conn.execute(
+            "SELECT id FROM expected WHERE boolean_id = 1"
+            " ORDER BY id LIMIT 1").fetchone()
+        exp_id = exp_true["id"] if exp_true else None
+        op_eq = self.conn.execute(
+            "SELECT id FROM operator WHERE meta = '=='"
+            " ORDER BY id LIMIT 1").fetchone()
+        op_id = op_eq["id"] if op_eq else None
+        if not exp_id or not op_id:
+            return
+        for fname, steps in flows.items():
+            # flow
+            self.conn.execute(
+                "INSERT INTO flow (flow_name)"
+                " SELECT ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM flow WHERE flow_name = ?)",
+                (fname, fname))
+            frow = self.conn.execute(
+                "SELECT id FROM flow WHERE flow_name = ?", (fname,)).fetchone()
+            if not frow:
+                continue
+            fid = frow["id"]
+            # step：每步一個 question（5W2H 維度）
+            for seq, (action, w5name, io) in enumerate(steps, start=1):
+                w5row = self.conn.execute(
+                    'SELECT id FROM "5W2H" WHERE meta = ?', (w5name,)).fetchone()
+                if not w5row:
+                    continue
+                w5 = w5row["id"]
+                has = self.conn.execute(
+                    "SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?",
+                    (fid, seq)).fetchone()
+                if has:
+                    continue
+                qrow = self.conn.execute(
+                    "SELECT id FROM question WHERE condition_id = ?"
+                    ' AND "5w2h_id" = ? AND expected_id = ?',
+                    (cid, w5, exp_id)).fetchone()
+                if qrow:
+                    qid = qrow["id"]
+                else:
+                    cur = self.conn.execute(
+                        "INSERT INTO question"
+                        " (condition_id, \"5w2h_id\", operator_id, expected_id)"
+                        " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                        " (SELECT 1 FROM question WHERE condition_id = ?"
+                        '  AND "5w2h_id" = ? AND expected_id = ?)',
+                        (cid, w5, op_id, exp_id, cid, w5, exp_id))
+                    qid = cur.lastrowid if cur.rowcount else None
+                    if qid is None:
+                        qr = self.conn.execute(
+                            "SELECT id FROM question WHERE condition_id = ?"
+                            ' AND "5w2h_id" = ? AND expected_id = ?',
+                            (cid, w5, exp_id)).fetchone()
+                        qid = qr["id"] if qr else None
+                if not qid:
+                    continue
+                self.conn.execute(
+                    "INSERT INTO step (flow_id, question_id, seq_id)"
+                    " SELECT ?, ?, ? WHERE NOT EXISTS"
+                    " (SELECT 1 FROM step WHERE flow_id = ? AND seq_id = ?)",
+                    (fid, qid, seq, fid, seq))
+        self.conn.commit()
+        print("[migrate] 5 條 migrate_* flow 入 terminology 就緒")
 
     def _seed_step_input(self):
         """遷移（幂等）：step_input seed（2026-10-28 用戶設計）
@@ -2735,6 +2866,12 @@ class SqlStore:
         """
         if _depth > 8:
             raise ValueError(f"flow 鏈太深（>8）：{flow_name}")
+        # 2026-10-28：value_id -> 反查 value（重用時要用真值判斷）
+        if value_id is not None and value is None:
+            vr = self.conn.execute(
+                "SELECT value FROM vdb.value WHERE id = ?",
+                (value_id,)).fetchone()
+            value = vr["value"] if vr else None
         # 2026-10-25：子 flow / 分支由 next_flow（_do_branch）統一處理
         if answers is None:
             answers = self._auto_answers(flow_name, value)
@@ -2805,6 +2942,38 @@ class SqlStore:
         if branch is not None:
             out["branch"] = branch
         return out
+
+    def run_flow_ids(self, flow_ids, value=None, value_id=None,
+                     save=True, role_id=None, rule_id=None):
+        """揀 flow id 組合順序執行（2026-10-28 用戶要求）
+
+        flow_ids = [1, 4, 67, 7] 組合（可以重用），逐條 run_flow：
+            - 每條 flow 用同一個 value/value_id
+            - 每條傳番 prev run_id 落去（chain）
+            - 全部 PASS 先繼續；FAIL 即刻停
+        返回 {"runs": [...]} 每條 flow 一個 run 記錄
+        """
+        if not flow_ids:
+            raise ValueError("flow_ids 唔可以空")
+        runs = []
+        prev_run_id = None
+        for fid in flow_ids:
+            fr = self.conn.execute(
+                "SELECT flow_name FROM flow WHERE id = ?", (fid,)).fetchone()
+            if not fr:
+                raise ValueError(f"flow id {fid} 唔存在")
+            out = self.run_flow(fr["flow_name"], value=value,
+                                value_id=value_id, save=save,
+                                role_id=role_id, rule_id=rule_id)
+            out = dict(out)
+            out["flow_id"] = fid
+            out["flow_name"] = fr["flow_name"]
+            out["prev_run_id"] = prev_run_id
+            runs.append(out)
+            prev_run_id = out.get("run_id")
+            if out.get("status_id") != 1:
+                break  # FAIL：行完已記錄，唔再跑
+        return {"runs": runs}
 
     def _do_branch(self, flow_name, run_id, value_id, steps, judged,
                    save, _depth, role_id=None, rule_id=None):

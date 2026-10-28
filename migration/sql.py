@@ -199,7 +199,7 @@ class SqlStore:
     # ---------- 記錄 ----------
     def record(self, module_name, table=None, migration_type="schema",
                description=None, run_id=None, api_id=None, row_id=0,
-               value=None, step_values=None, run_flow=True):
+               value=None, value_id=None, step_values=None, run_flow=True):
         """記錄一次 migration（冪等：同 run + module + table + type + desc 唔重複）
 
         module_name    = taxonomy.registry.meta（邊個 module）
@@ -210,6 +210,7 @@ class SqlStore:
         api_id         = 保留參數（api 觸發來源，記錄用；type_id 唔係 api_id）
         row_id         = 改邊行（0 = 全表）
         value          = 提交值（跑 flow 用；冇 -> 用 description 做 value）
+        value_id       = 已存在 value.id（重用，唔新開；優先於 value）
         step_values    = {step_action: {"input": ..., "output": ...}} 每步實際值；
                          冇傳 -> 自動執行該 type flow 每步（真查 DB 攞值）
         run_flow       = False 就唔自動跑 terminology flow（內部用，避免遞歸）
@@ -219,7 +220,8 @@ class SqlStore:
         tid = self.type_id(migration_type) or self.type_id("other")
         # run_id 一定要有（用戶：run_id = terminology run）：
         if run_id is None and run_flow:
-            run_id = self._auto_run(value or f"migration:{table or module_name}")
+            run_id = self._auto_run(value or f"migration:{table or module_name}",
+                                    value_id=value_id)
         # 執行 flow steps（呢個 type 嘅 migration 流程）
         if run_flow:
             flow_id, step_id, step_rows = self._exec_flow(
@@ -442,7 +444,7 @@ class SqlStore:
         except Exception:
             return None
 
-    def _auto_run(self, value):
+    def _auto_run(self, value, value_id=None):
         """自動跑 terminology flow -> 真 run_id（用戶：run_id = terminology run）
 
         用戶要求（2026-10-28）：
@@ -457,7 +459,8 @@ class SqlStore:
             from terminology.api import Terminology
             t = Terminology()
             try:
-                res = t.run_flow("migration_audit", value=value, save=True)
+                res = t.run_flow("migration_audit", value=value,
+                                 value_id=value_id, save=True)
                 return res.get("run_id")
             finally:
                 t.close()

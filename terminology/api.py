@@ -275,6 +275,12 @@ class Terminology:
         return self.store.run_flow(flow_name, answers, value,
                                    value_id, save, 0, role_id, rule_id)
 
+    def run_flow_ids(self, flow_ids, value=None, value_id=None,
+                     save=True, role_id=None, rule_id=None):
+        """揀 flow id 組合順序執行（1,4,67,7 重用；FAIL 即刻停）"""
+        return self.store.run_flow_ids(flow_ids, value, value_id,
+                                       save, role_id, rule_id)
+
     def flow_runs(self, limit=20):
         """列出執行記錄（證明）"""
         return self.store.flow_runs(limit)
