@@ -73,7 +73,7 @@ class SqlStore:
             self.insert_category("module", 2, 1)
         for _module in ("terminology", "version", "skill", "value",
                         "lineage", "role", "rule", "preflight", "plan",
-                        "task", "tool"):
+                        "task", "tool", "permit"):
             self.insert_item("module", _module)
         self._rebuild_physical_paths()
 
