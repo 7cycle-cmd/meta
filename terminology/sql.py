@@ -1499,70 +1499,181 @@ class SqlStore:
     def _build_expected_sources(self, source_module=None):
         """由 question 逐個建 expected_source（2026-10-28 用戶要求）
 
-        用戶：「before you need to have code for each condition 1 by 1,
-               now your job is to base on the question to have expect_source,
-               as it is *_id, method is which table and which field」
-
-        方法（表話事，零 hardcode）：
-            1. 每個 condition 喺 step_input 有 source_table/source_column
-               （例如 value.id / module.db / permit.id / identity.id）
-            2. source_table 係「模組名」，對應真實 DB：
-               value -> value.db、permit -> permit.db、identity -> identity.db、
-               module -> module.db、taxonomy -> taxonomy.db、lineage -> lineage.db
-            3. 每個 question 由呢個 source 真查 DB 攞 *_id
-            4. 寫 expected_source（value = 攞到嘅 *_id，value_id 登記 value.db）
-
+        formula 由 db_field_option 真實資料建（2026-10-28 用戶修正）：
+          1. step -> question -> condition（純 action 名）
+          2. condition 名 -> 真實表（migration_log 等）——以 db_field_option
+             已登記嘅 (table, field, option) 為權威
+          3. formula 格式：
+             <select id from "<table>"> where <db_field>_id = "<option>"
+             and <db_field>_id = "<option>"
+          4. value = 真查真實表攞到嘅 id（唔係假值）
         返回 {"created": n, "skipped": n, "by_module": {...}}
         """
-        # step_input: condition -> (5w2h -> source_table/source_column)
-        rows = self.conn.execute(
-            "SELECT condition_id, \"5w2h_id\", source_table, source_column"
-            " FROM step_input WHERE is_active = 1").fetchall()
-        src_map = {}
-        for r in rows:
-            src_map.setdefault(r["condition_id"], {})[r["5w2h_id"]] = (
-                r["source_table"], r["source_column"])
-        # 模組名 -> (DB 檔, 表名)（source_table = 「db.表」；表話事）
+        # 1. condition meta -> 真實表（migration 活動表；以 structure.db 為權威）
         import os
         META = r"C:\projects\meta"
-        def db_of(tblspec):
-            """source_table「db.表」 -> (db 路徑, 表名)；攞唔到 -> (None, None)"""
-            tblspec = (tblspec or "").strip()
-            if "." in tblspec:
-                dbm, tbl = tblspec.split(".", 1)
-            else:
-                dbm, tbl = tblspec, tblspec
-            dbm = dbm.strip().lower()
-            tbl = tbl.strip()
-            if not dbm or not tbl:
-                return None, None
-            # taxonomy 嘅 id 喺 registry 表
-            if dbm == "taxonomy" and tbl == "taxonomy":
-                tbl = "registry"
-            # identity 嘅 id 喺 registry 表（identity.db 冇 identity 表）
-            if dbm == "identity" and tbl == "identity":
-                tbl = "registry"
-            # split_total 喺 value.db
-            if tbl == "split_total":
-                return os.path.join(META, "value", "value.db"), "split_total"
-            # module 冇 db 檔（where = db 檔名概念，跳過）
-            if dbm == "module":
-                return None, None
-            return os.path.join(META, dbm, f"{dbm}.db"), tbl
+        STRUCT = os.path.join(META, "structure", "structure.db")
+        # 真實表 -> DB 檔（migration 活動表喺 migration.db；run/evidence 喺
+        # terminology.db；value 喺 value.db）
+        dbmap = {
+            "migration_log": os.path.join(META, "migration", "migration.db"),
+            "run": os.path.join(META, "terminology", "terminology.db"),
+            "evidence": os.path.join(META, "terminology", "terminology.db"),
+            "value": os.path.join(META, "value", "value.db"),
+        }
+        # migrate 5 flow（22-26）嘅 step.action 集合（零 hardcode）——
+        # 呢啲 condition 名（inspect_table / check_column / ...）唔係真實表，
+        # 全部對應 migration_log（migration 活動表）
+        migrate_actions = {r["action"] for r in self.conn.execute(
+            "SELECT DISTINCT action FROM step"
+            " WHERE flow_id IN (22,23,24,25,26) AND is_active = 1")}
+
+        def _structure():
+            """structure.db 連線（每 call 新開，避免鎖）"""
+            import sqlite3 as _sq
+            sc = _sq.connect(STRUCT)
+            sc.row_factory = _sq.Row
+            return sc
+
+        def cond_table(condition_id):
+            """condition 名 -> 真實表名（有 db_field_option 登記先當真）"""
+            c = self.conn.execute(
+                "SELECT meta FROM condition WHERE id = ?", (condition_id,)
+            ).fetchone()
+            if not c:
+                return None
+            meta = (c["meta"] or "").split(":")[-1].strip()  # migrate_schema:inspect_table -> inspect_table
+            # 1) migrate 5 flow 嘅純 action 名 -> migration_log
+            if meta in migrate_actions:
+                return "migration_log"
+            # 2) db_field_option 有登記嘅同名真實表（value/run/evidence/...）
+            sc = _structure()
+            try:
+                r = sc.execute(
+                    "SELECT DISTINCT t.table_name"
+                    " FROM db_field_option o"
+                    " JOIN structure_db_table t ON t.id = o.structure_db_table_id"
+                    " WHERE t.table_name = ? LIMIT 1", (meta,)).fetchone()
+                if r:
+                    return r["table_name"]
+            finally:
+                sc.close()
+            return None
+
+        # 2. 真實表 -> db_field_option 有嘅 (field, option) 配對
+        def field_options(table_name, condition_id=None):
+            """攞 (field, option) 真實配對（db_field_option 權威）
+
+            由真實表攞 (field, value)，只揀 db_field_option 有登記嘅
+            option 值 -> formula 必命中真實 row。
+            migration_log：每 condition 一條唔同 formula —— 以
+            「migrate condition 次序」對應唔同真實 row（1 action =
+            1 condition = 1 function = 1 value；唔同 step 唔同行）。
+            其他表：真實表第一行。
+            """
+            dbp = dbmap.get(table_name)
+            if not dbp or not os.path.isfile(dbp):
+                return []
+            import sqlite3 as _sq
+            rc = _sq.connect(dbp)
+            try:
+                rc.row_factory = _sq.Row
+                if table_name == "migration_log" and condition_id:
+                    # migrate action condition 次序 -> migration_log 唔同行
+                    migrate_cids = [r["id"] for r in self.conn.execute(
+                        "SELECT id, meta FROM condition"
+                        " WHERE is_active = 1 ORDER BY id").fetchall()
+                        if (r["meta"] or "").split(":")[-1].strip()
+                        in migrate_actions]
+                    idx = next((i for i, cid in enumerate(migrate_cids)
+                                if cid == condition_id), None)
+                    if idx is None:
+                        return []
+                    row = rc.execute(
+                        "SELECT * FROM migration_log"
+                        " WHERE is_active = 1"
+                        " ORDER BY id LIMIT 1 OFFSET ?", (idx,)).fetchone()
+                else:
+                    row = rc.execute(
+                        f"SELECT * FROM {table_name} LIMIT 1").fetchone()
+                if not row:
+                    return []
+                row = dict(row)
+            finally:
+                rc.close()
+            # db_field_option 有嘅 (field_name, value) 集合（table 對應）
+            sc = _structure()
+            try:
+                opts = {(r["field_name"], r["value"]) for r in sc.execute(
+                    "SELECT DISTINCT f.field_name, o.value"
+                    " FROM db_field_option o"
+                    " JOIN structure_db_table t ON t.id = o.structure_db_table_id"
+                    " JOIN structure_db_field f ON f.id = o.structure_db_field_id"
+                    " WHERE t.table_name = ? AND o.is_active = 1",
+                    (table_name,)).fetchall()}
+            finally:
+                sc.close()
+            out = []
+            for col, val in row.items():
+                if col == "id":
+                    continue
+                # option 記錄嘅 field 名：欄名本身 / 欄名去 _id / 欄名加 _id
+                cands = (col, col[:-3] if col.endswith("_id") else col + "_id")
+                hit = next(((f, o) for f, o in opts
+                            if f in cands and str(o) == str(val)), None)
+                if hit:
+                    out.append((col, hit[1]))
+                    if len(out) >= 2:
+                        break
+            return out
+
+        def formula_text(table_name, pairs):
+            """由真實 (field, option) 建 formula：
+            <select id from "<table>"> where <db_field>_id = "<option>"
+            and <db_field>_id = "<option>"
+            """
+            parts = []
+            for col, opt in pairs:
+                if not col or opt is None:
+                    continue
+                parts.append(f'{col} = "{opt}"')
+            if not parts:
+                return None
+            return ('<select id from "%s"> where %s'
+                    % (table_name, " and ".join(parts)))
+
+        def real_id(table_name, pairs):
+            """真查真實表攞 id（formula 執行 = 攞 row id）"""
+            dbp = dbmap.get(table_name)
+            if not dbp or not os.path.isfile(dbp):
+                return None
+            import sqlite3 as _sq
+            try:
+                rc = _sq.connect(dbp)
+                try:
+                    rc.row_factory = _sq.Row
+                    where = []
+                    args = []
+                    for col, opt in pairs:
+                        where.append(f'{col} = ?')
+                        args.append(opt)
+                    r = rc.execute(
+                        f"SELECT id FROM {table_name}"
+                        f" WHERE {' AND '.join(where)} LIMIT 1", args
+                    ).fetchone()
+                    return r["id"] if r else None
+                finally:
+                    rc.close()
+            except Exception:
+                return None
+
         created = skipped = 0
         by_module = {}
         qs = self.conn.execute(
             "SELECT id, condition_id, \"5w2h_id\" FROM question"
             " WHERE is_active = 1 ORDER BY condition_id, \"5w2h_id\"").fetchall()
         for q in qs:
-            src = src_map.get(q["condition_id"], {}).get(q["5w2h_id"])
-            if not src:
-                skipped += 1
-                continue
-            table, column = src
-            # 2026-10-28（用戶修正）：how much（5w2h_id=7）唔係一步攞到——
-            # 係 flow + step 累計結果（verify_count / verify_rowcount 步驟先計到）。
-            # 呢度唔建 expected_source（點對點證明 = 成條 flow 行完先準確）。
+            # how much（5w2h_id=7）唔係一步攞到——flow + step 累計（用戶 2026-10-28）
             if q["5w2h_id"] == 7:
                 skipped += 1
                 continue
@@ -1573,45 +1684,33 @@ class SqlStore:
             if has:
                 skipped += 1
                 continue
-            # 真查 DB 攞 *_id
-            sid = None
-            try:
-                import sqlite3 as _sq
-                dbp, tbl = db_of(table)
-                if dbp and os.path.isfile(dbp):
-                    c = _sq.connect(dbp)
-                    try:
-                        c.row_factory = _sq.Row
-                        # column 可能係「id」；攞第一行個 id
-                        rr = c.execute(
-                            f"SELECT {column} AS v FROM {tbl} LIMIT 1"
-                        ).fetchone()
-                        sid = rr["v"] if rr else None
-                    finally:
-                        c.close()
-            except Exception:
-                sid = None
-            if sid is None:
+            # condition -> 真實表
+            tname = cond_table(q["condition_id"])
+            if not tname:
                 skipped += 1
                 continue
-            # formula：準確格式（限 output by id，指明 db_file/表/condition/維度，
-            # 唔 select *）—— condition × 5W2H 維度都要指明先精準
-            db_file = os.path.basename(dbp) if dbp else ""
-            ftext = (f'xxx=<select id from "{tbl}" '
-                     f'where condition_id = "{q["condition_id"]}" '
-                     f'and "5w2h_id" = "{q["5w2h_id"]}">')
-            # 寫 expected_source（value = *_id，value_id 自動登記 + formula 真 id）
+            pairs = field_options(tname, q["condition_id"])
+            if len(pairs) < 2:
+                skipped += 1
+                continue
+            ftext = formula_text(tname, pairs)
+            sid = real_id(tname, pairs)
+            if ftext is None or sid is None:
+                skipped += 1
+                continue
+            # 寫 expected_source（value = 真查 id，formula 真 id 自動登記）
             try:
                 esid = self.set_expected_source(q["id"], value=str(sid),
                                                 formula=ftext)
                 # formula 表補 db_file（指明邊個 db，令 formula 更準確）
                 if esid:
-                    self._formula_db_file(ftext, db_file)
+                    self._formula_db_file(ftext, os.path.basename(
+                        dbmap.get(tname, "")))
                 # 同步 question.expected_source_id（直接指住）
                 self.conn.execute(
                     "UPDATE question SET expected_source_id = ? WHERE id = ?",
                     (esid, q["id"]))
-                by_module[table] = by_module.get(table, 0) + 1
+                by_module[tname] = by_module.get(tname, 0) + 1
                 created += 1
             except Exception:
                 skipped += 1
