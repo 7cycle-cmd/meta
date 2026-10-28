@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS question (
     is_active      BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
     updated_at     TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),
-    UNIQUE (condition_id, "5w2h_id", expected_id)
+    UNIQUE (condition_id, "5w2h_id", operator_id, expected_id)
 );
 """
 
@@ -273,6 +273,7 @@ CREATE TABLE IF NOT EXISTS expected_source (
     formula_id        INTEGER,               -- template.formula.id（blackbox 來源）
     formula_cutter_id INTEGER,               -- template.formula_cuter.id（切粒定位，可選）
     value             TEXT,                   -- 期望值（formula 執行結果 / 直接值）
+    value_id          INTEGER,               -- value.db value.id（proof at db，2026-10-28）
     output_format     TEXT NOT NULL DEFAULT '1,0',  -- 輸出格式（1,0 boolean）
     is_active         BOOLEAN NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at        TEXT    NOT NULL DEFAULT (datetime('now', 'localtime')),

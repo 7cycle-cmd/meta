@@ -220,15 +220,17 @@ class SqlStore:
             WORD_CATEGORY_DDL, SOURCE_REGISTER_DDL,
         ]))
         self.conn.commit()
-        # 2026-10-28（用戶設計：4 張 by-id 表接實體位置）——
+        # 2026-10-28（用戶設計：resource 2 表接實體位置）——
         # 真實登記「terminology 用咗邊啲 schema」（由已批 import_permit 逐個
-        # 寫入 resource_schema + structure_resource，AST 掃真實行號）。
+        # 寫入 resource.registry + structure_resource，AST 掃真實行號）。
         self._register_resource_schemas()
 
-    # ---------- resource_schema / structure_resource 真實登記（2026-10-28）----------
+    # ---------- resource.registry / structure_resource 真實登記（2026-10-28）----------
     # terminology 啟動建表 = 真係用咗呢 26 個 schema symbol（有 import permit）。
     # 由 permit.db import_permit（by id 已批）逐個登記：
-    #   resource_schema      = (taxonomy_tree_id=4 module tree, schema_registry_id)
+    #   resource.registry    = (type=schema, name=symbol 名,
+    #                            bind_target_id=schema_registry.id,
+    #                            source_file, source_line_start=AST 行號)
     #   structure_resource   = (resource_type_id=schema, value=symbol 名,
     #                            package_id, file_id,
     #                            line_number=AST 掃真實行號)
@@ -236,7 +238,16 @@ class SqlStore:
     # permit.db import_permit 真表攞。冪等（全部 WHERE NOT EXISTS）。
 
     def _register_resource_schemas(self):
-        """登記已用 schema 到 resource_schema + structure_resource（冪等）"""
+        """登記已用 schema 到 resource.registry + structure_resource（冪等）
+
+        2026-10-28（用戶 redesign）：resource = 2 張表（type + registry）。
+        resource.registry 登記：
+            type = schema（id 1）
+            name = DDL symbol 名（e.g. ANSWER_DDL）
+            bind_target_id = schema.db schema_registry.id
+            source_file = terminology/schema.py
+            source_line_start = AST 掃到嘅真實行號
+        """
         try:
             from permit import Permit as _P
             _pp = _P()
@@ -282,18 +293,22 @@ class SqlStore:
                             continue
                         if perm.get("module_id") not in (None, mid):
                             continue
-                        # resource_schema（tree 2 = module tree，terminology）
-                        rsid = _rs.add_resource_schema(
-                            2, perm["schema_id"])
+                        symbol = perm.get("symbols")
+                        line = lines.get(symbol)
+                        # resource.registry（type=schema，bind schema_registry.id）
+                        _rs.register(
+                            "schema", symbol,
+                            bind_target_id=perm["schema_id"],
+                            source_file="terminology/schema.py",
+                            source_line_start=line)
                         # structure_resource（物理位置：package + file +
                         # 行號 AST；type='schema'，value=symbol 名）
                         package_id = self._structure_module_id(mid, None)
                         file_id = self._structure_module_id(mid, "schema.py")
-                        line = lines.get(perm.get("symbols"))
-                        if rsid and package_id:
+                        if package_id:
                             _st.add_structure_resource(
                                 _st.resource_type_id("schema"),
-                                perm.get("symbols"), package_id,
+                                symbol, package_id,
                                 line_number=line, file_id=file_id)
                         n += 1
                 finally:
@@ -303,7 +318,7 @@ class SqlStore:
         except Exception:
             return
         if n:
-            print(f"[terminology] resource_schema 真實登記：{n} 個 schema"
+            print(f"[terminology] resource.registry 真實登記：{n} 個 schema"
                   f"（by permit.db import_permit）")
 
     def _schema_symbol_lines(self):
@@ -388,6 +403,8 @@ class SqlStore:
         self._migrate_split_flow()
         self._migrate_migrate_audit_flow()
         self._migrate_migration_flows()
+        self._migrate_questions_6x2()
+        self._migrate_expected_source_value_id()
         self._seed_step_input()
         self._migrate_source_register_defaults()
         self._migrate_value_taxonomy_id()
@@ -937,6 +954,96 @@ class SqlStore:
         print("[migrate] 5 條 migrate_* flow 入 terminology 就緒"
               "（1 action = 1 condition，表話事）")
 
+    def _migrate_questions_6x2(self):
+        """遷移（幂等）：每個 condition 6 維度 × 2 operator == != = 12 條 question
+
+        用戶要求（2026-10-28）：
+            5W2H = all condition must have 6 question
+                （what / where / when / who / why / how）
+            每條 question 都要 value_id（expected_source.value -> proof at DB）
+            yes and not = operator == and != -> 6 × 2 = 12
+            how much = measure unit（攞 *_id）—— 唔係提問維度
+
+        只用 6 維度（what/where/when/who/why/how）；how much(7) 由
+        step_input（source_table/source_column）做 measure unit 來源。
+        冪等：UNIQUE(condition_id, "5w2h_id", operator_id, expected_id)。
+        """
+        # 2026-10-28 修正：上版誤加 how much -> 刪除維度 7 question
+        c_del = self.conn.execute("DELETE FROM question WHERE \"5w2h_id\" = 7")
+        if c_del.rowcount:
+            self.conn.commit()
+            print(f"[migrate] 移除誤加 how much question：{c_del.rowcount} 條")
+        op_eq = self.conn.execute(
+            "SELECT id FROM operator WHERE meta = '==' ORDER BY id LIMIT 1"
+        ).fetchone()
+        op_ne = self.conn.execute(
+            "SELECT id FROM operator WHERE meta = '!=' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if not op_eq or not op_ne:
+            return
+        op_eq, op_ne = op_eq["id"], op_ne["id"]
+        exp_true = self.conn.execute(
+            "SELECT id FROM expected WHERE boolean_id = 1"
+            " ORDER BY id LIMIT 1").fetchone()
+        exp_false = self.conn.execute(
+            "SELECT id FROM expected WHERE boolean_id = 0"
+            " ORDER BY id LIMIT 1").fetchone()
+        if not exp_true or not exp_false:
+            return
+        exp_t, exp_f = exp_true["id"], exp_false["id"]
+        # 6 維度（what=1 where=2 when=3 who=4 why=5 how=6）
+        dims = [1, 2, 3, 4, 5, 6]
+        rows = []
+        for cid in [r["id"] for r in self.conn.execute(
+                "SELECT id FROM condition WHERE is_active = 1")]:
+            for w5 in dims:
+                for op, exp in ((op_eq, exp_t), (op_ne, exp_f)):
+                    has = self.conn.execute(
+                        "SELECT 1 FROM question WHERE condition_id = ?"
+                        ' AND "5w2h_id" = ? AND operator_id = ?'
+                        " AND expected_id = ?",
+                        (cid, w5, op, exp)).fetchone()
+                    if has:
+                        continue
+                    rows.append((cid, w5, op, exp))
+        for cid, w5, op, exp in rows:
+            self.conn.execute(
+                "INSERT INTO question"
+                " (condition_id, \"5w2h_id\", operator_id, expected_id)"
+                " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM question WHERE condition_id = ?"
+                '  AND "5w2h_id" = ? AND operator_id = ?'
+                "  AND expected_id = ?)",
+                (cid, w5, op, exp, cid, w5, op, exp))
+        self.conn.commit()
+        print(f"[migrate] question 6×2 seed：+{len(rows)} 條"
+              "（每個 condition 6 維度 × ==/!= = 12）")
+
+    def _migrate_expected_source_value_id(self):
+        """遷移（幂等）：expected_source 加 value_id 欄（2026-10-28 用戶要求）
+
+        用戶：「with value_id」—— expected_source 嘅期望值要有 value.db
+        證明（proof at db），唔淨係文字。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('expected_source')")}
+        if "value_id" not in cols:
+            self.conn.execute(
+                "ALTER TABLE expected_source ADD COLUMN value_id INTEGER")
+            self.conn.commit()
+            print("[migrate] expected_source + value_id 欄")
+            # 回填：現有 value -> value.db 登記
+            rows = self.conn.execute(
+                "SELECT id, value FROM expected_source"
+                " WHERE value IS NOT NULL AND value_id IS NULL").fetchall()
+            for r in rows:
+                vid = self.add_value(r["value"])
+                self.conn.execute(
+                    "UPDATE expected_source SET value_id = ? WHERE id = ?",
+                    (vid, r["id"]))
+            self.conn.commit()
+            print(f"[migrate] expected_source value_id 回填：{len(rows)} 行")
+
     def _seed_step_input(self):
         """遷移（幂等）：step_input seed（2026-10-28 用戶設計）
 
@@ -1074,15 +1181,18 @@ class SqlStore:
 
     def set_expected_source(self, question_id, formula_id=None,
                             formula_cutter_id=None, value=None,
-                            output_format="1,0"):
+                            output_format="1,0", value_id=None):
         """設定一條 question 嘅期望值來源（Table-driven，冪等）
 
         question_id       = terminology.question.id
         formula_id        = template.formula.id（blackbox 公式，執行出期望）
         formula_cutter_id = formula_cuter.id（切粒定位，improve 用）
         value             = 期望值（formula 執行結果 / 直接值）
+        value_id          = value.db value.id（proof at db；value 自動登記）
         output_format     = 輸出格式（1,0 boolean）
         """
+        if value_id is None and value is not None:
+            value_id = self.add_value(value)
         # 已有 -> 更新
         has = self.conn.execute(
             "SELECT id FROM expected_source WHERE question_id = ?"
@@ -1090,18 +1200,19 @@ class SqlStore:
         if has:
             self.conn.execute(
                 "UPDATE expected_source SET formula_cutter_id = ?,"
-                " value = ?, output_format = ?, updated_at ="
+                " value = ?, value_id = ?, output_format = ?, updated_at ="
                 " datetime('now','localtime') WHERE id = ?",
-                (formula_cutter_id, value, output_format, has["id"]))
+                (formula_cutter_id, value, value_id, output_format,
+                 has["id"]))
             rid = has["id"]
         else:
             cur = self.conn.execute(
                 "INSERT INTO expected_source"
                 " (question_id, formula_id, formula_cutter_id, value,"
-                "  output_format)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "  value_id, output_format)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (question_id, formula_id, formula_cutter_id, value,
-                 output_format))
+                 value_id, output_format))
             rid = cur.lastrowid
         self.conn.commit()
         return rid
