@@ -48,7 +48,10 @@ class Migration:
         return [dict(r) for r in self.store.conn.execute(sql)]
 
     def step_registry(self, flow_registry_id=None, active_only=True):
-        """列出 step_registry（每個 skill 檔案嘅 function + 行號）"""
+        """列出 step_registry（每個 skill 檔案嘅 function + 行號）
+
+        flow_id = template.flow.id（由 flow_name 真查，零 hardcode）
+        """
         sql = ("SELECT sr.*, fr.filename"
                " FROM step_registry sr"
                " LEFT JOIN flow_registry fr ON fr.id = sr.flow_registry_id")

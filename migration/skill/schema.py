@@ -81,11 +81,18 @@ CREATE TABLE IF NOT EXISTS flow_registry (
 #   flow_registry_id -> flow_registry.id（邊個 skill 檔案）
 #   formula_id       -> template.formula.id（formula 真 id，冇 -> NULL）
 #   line_number      = function 真實行號（AST 掃，零 hardcode）
+#
+# 2026-10-29 實查修正：template.formula 表（447 行）全部係
+# `xxx=<select ...>` 字串模板（驗證鏈用），migration skill 嘅 function
+# 喺 formula 表冇對應記錄 -> formula_id 永遠 NULL，冇意義。
+# 真正嘅 flow/step 登記喺 template.db：flow（id|flow_name，schema=8）
+# + step（id|flow_id|question_id|seq_id）。所以 formula_id 欄位
+# 改為 flow_id（template.flow.id，由 flow_name 真查，零 hardcode）。
 STEP_REGISTRY_DDL = """
 CREATE TABLE IF NOT EXISTS step_registry (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     flow_registry_id INTEGER NOT NULL,     -- flow_registry.id（邊個 skill 檔案）
-    formula_id       INTEGER,              -- template.formula.id（formula 真 id）
+    flow_id          INTEGER,              -- template.flow.id（flow 真 id，由 flow_name 真查）
     line_number      INTEGER NOT NULL DEFAULT 0,  -- function 真實行號（AST 掃）
     is_active        INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at       TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))

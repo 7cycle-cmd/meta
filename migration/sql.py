@@ -39,6 +39,7 @@ class SqlStore:
         self._migrate_type_id()
         self._migrate_log_flow_columns()
         self._migrate_drop_flow_tables()
+        self._migrate_step_registry_flow_id()
         self._seed_flow_registry()
         self.conn.commit()
 
@@ -49,7 +50,7 @@ class SqlStore:
             total_line = 檔案真實行數（AST 掃，零 hardcode）
         step_registry：每個檔案嘅 public function
             flow_registry_id -> flow_registry.id
-            formula_id       -> template.formula.id（冇 -> NULL）
+            flow_id          -> template.flow.id（由 flow_name 真查，零 hardcode）
             line_number      = function 真實行號（AST 掃）
         """
         import os as _os
@@ -63,6 +64,21 @@ class SqlStore:
         skill_dir = _os.path.join(r"C:\projects\meta", "migration", "skill")
         # 6 個 skill 檔案（用戶指定順序）
         files = ["audit", "schema", "seed", "sync", "cutover", "other"]
+        # template.flow.id by flow_name（真查，零 hardcode）
+        flow_ids = {}
+        try:
+            tc = sqlite3.connect(
+                r"C:\projects\meta\template\template.db")
+            try:
+                tc.row_factory = sqlite3.Row
+                for r in tc.execute(
+                        "SELECT id, flow_name FROM flow"
+                        " WHERE is_active = 1"):
+                    flow_ids[r["flow_name"]] = r["id"]
+            finally:
+                tc.close()
+        except Exception:
+            pass
         for fname in files:
             path = _os.path.join(skill_dir, f"{fname}.py")
             total = 0
@@ -96,14 +112,15 @@ class SqlStore:
                 "UPDATE flow_registry SET total_line = ? WHERE id = ?",
                 (total, fr["id"]))
             # step_registry（每個 function 一行；冪等：UNIQUE 組合）
+            fid = flow_ids.get(fname)
             for fname2, line in funcs:
                 self.conn.execute(
                     "INSERT INTO step_registry"
-                    " (flow_registry_id, line_number)"
-                    " SELECT ?, ? WHERE NOT EXISTS"
+                    " (flow_registry_id, flow_id, line_number)"
+                    " SELECT ?, ?, ? WHERE NOT EXISTS"
                     " (SELECT 1 FROM step_registry"
                     "  WHERE flow_registry_id = ? AND line_number = ?)",
-                    (fr["id"], line, fr["id"], line))
+                    (fr["id"], fid, line, fr["id"], line))
         self.conn.commit()
 
     def _migrate_drop_flow_tables(self):
@@ -139,6 +156,22 @@ class SqlStore:
                 "ALTER TABLE migration_log ADD COLUMN value_id INTEGER")
             self.conn.commit()
             print("[migration] migration_log + value_id 欄")
+
+    def _migrate_step_registry_flow_id(self):
+        """遷移（幂等）：step_registry formula_id -> flow_id（2026-10-29 實查修正）
+
+        formula_id 指向 template.formula（全部係 `xxx=<select...>` 字串模板），
+        migration skill function 喺 formula 表冇對應記錄 -> formula_id 永遠
+        NULL 冇意義。改為 flow_id（template.flow.id，由 flow_name 真查）。
+        舊表（有 formula_id 欄）drop 重建；新表由 _seed_flow_registry 重新 seed。
+        """
+        cols = {c[1] for c in self.conn.execute(
+            "PRAGMA table_info('step_registry')")}
+        if "formula_id" in cols:
+            self.conn.execute("DROP TABLE step_registry")
+            self.conn.execute(STEP_REGISTRY_DDL)
+            self.conn.commit()
+            print("[migration] step_registry formula_id -> flow_id（drop 重建）")
 
     def _seed_types(self):
         """type 字典 seed（冪等：WHERE NOT EXISTS，唔燒 AUTOINCREMENT 號）"""
