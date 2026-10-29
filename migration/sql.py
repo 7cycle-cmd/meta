@@ -12,7 +12,7 @@
 import os
 import sqlite3
 
-from .schema import (MIGRATION_LOG_DDL, TYPE_DDL)  # noqa: F401
+from .skill.schema import (MIGRATION_LOG_DDL, TYPE_DDL)  # noqa: F401
 
 DB_PATH = r"C:\projects\meta\migration\migration.db"
 

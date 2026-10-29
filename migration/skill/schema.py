@@ -5,6 +5,9 @@ migrate_schema flow 嘅 7 個 action（inspect_table / check_column / add_column
 backfill_column / verify_column / verify_rowcount / report）由 sql.py 搬嚟
 呢度 —— 技能層（skill）負責「點做」，sql.py 只留審計記錄 + 其他 migrate_*。
 
+2026-10-29（用戶再要求）：migration/schema.py 刪除 —— DDL（TYPE_DDL /
+MIGRATION_LOG_DDL）都搬埋入呢度，migration 只有一個 schema.py（呢個）。
+
 每個 function 都係真 SQL（PRAGMA / ALTER / COUNT），零 hardcode：
     module_name = taxonomy.registry.meta（邊個 module；決定 db 檔）
     table       = 張表名
@@ -23,6 +26,43 @@ import os
 import sqlite3
 
 META = r"C:\projects\meta"
+
+# ============ DDL（由 migration/schema.py 搬入，2026-10-29 用戶要求）============
+# type 字典：migration 類型（2026-10-28 用戶設計）
+# value 幫助識別（唔使淨靠 id）
+TYPE_DDL = """
+CREATE TABLE IF NOT EXISTS type (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    value       TEXT    NOT NULL UNIQUE,  -- schema / seed / sync / cutover / other
+    description TEXT,                      -- 描述
+    is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# migration_log：遷移審計日誌（2026-10-28 用戶設計）
+# type_id -> type.id（migration 類型：schema/seed/sync/cutover/other）
+# flow_id  -> terminology.flow.id（行邊條 migration flow，2026-10-28 用戶要求；
+#             flow/step 已全部喺 terminology.db，呢度由 run_id 反查）
+# step_id  -> terminology.step.id（停喺邊步；全 pass = 最後一步）
+MIGRATION_LOG_DDL = """
+CREATE TABLE IF NOT EXISTS migration_log (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id             INTEGER,            -- terminology run.id（驗證鏈執行）
+    value_id           INTEGER,            -- value.db value.id（提交值，2026-10-28）
+    type_id            INTEGER,            -- type.id（migration type 字典）
+    taxonomy_id        INTEGER,            -- taxonomy.registry.id（邊個 module）
+    structure_db_table TEXT,               -- 改邊張表（db_table 名）
+    description        TEXT,               -- 描述
+    row_id             INTEGER NOT NULL DEFAULT 0,  -- 改邊行（0 = 全表）
+    flow_id            INTEGER,            -- terminology.flow.id（migration flow）
+    step_id            INTEGER,            -- terminology.step.id（停喺邊步）
+    is_active          INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at         TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+__all__ = ["TYPE_DDL", "MIGRATION_LOG_DDL", "SchemaSkill"]
 
 
 class SchemaSkill:
