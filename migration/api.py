@@ -44,7 +44,7 @@ class Migration:
 
         已搬去 skill.py（SchemaSkill，2026-10-29 用戶要求）。
         """
-        from .skill import SchemaSkill
+        from .skill.schema import SchemaSkill
         s = SchemaSkill()
         try:
             return s.check_column(module_name, table, column)
@@ -56,7 +56,7 @@ class Migration:
 
         已搬去 skill.py（SchemaSkill，2026-10-29 用戶要求）。
         """
-        from .skill import SchemaSkill
+        from .skill.schema import SchemaSkill
         s = SchemaSkill()
         try:
             return s.add_column(module_name, table, column, column_type)
@@ -65,7 +65,7 @@ class Migration:
 
     def inspect_table(self, module_name, table):
         """真實 inspect：PRAGMA table_info 攞欄位清單（skill.py）"""
-        from .skill import SchemaSkill
+        from .skill.schema import SchemaSkill
         s = SchemaSkill()
         try:
             return s.inspect_table(module_name, table)
@@ -74,7 +74,7 @@ class Migration:
 
     def backfill_column(self, module_name, table, column):
         """真實回填：count 有值 row 數（skill.py）"""
-        from .skill import SchemaSkill
+        from .skill.schema import SchemaSkill
         s = SchemaSkill()
         try:
             return s.backfill_column(module_name, table, column)
@@ -83,7 +83,7 @@ class Migration:
 
     def verify_column(self, module_name, table, column):
         """真實 verify：PRAGMA 確認欄位存在（skill.py）"""
-        from .skill import SchemaSkill
+        from .skill.schema import SchemaSkill
         s = SchemaSkill()
         try:
             return s.verify_column(module_name, table, column)
@@ -92,7 +92,7 @@ class Migration:
 
     def verify_rowcount(self, module_name, table):
         """真實 verify rowcount：count(*)（skill.py）"""
-        from .skill import SchemaSkill
+        from .skill.schema import SchemaSkill
         s = SchemaSkill()
         try:
             return s.verify_rowcount(module_name, table)
@@ -101,7 +101,7 @@ class Migration:
 
     def report(self, module_name=None, table=None):
         """真實 report：migration_log 統計（skill.py）"""
-        from .skill import SchemaSkill
+        from .skill.schema import SchemaSkill
         s = SchemaSkill()
         try:
             return s.report(module_name, table)
