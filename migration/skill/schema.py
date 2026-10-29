@@ -77,9 +77,10 @@ CREATE TABLE IF NOT EXISTS flow_registry (
 """
 
 # step_registry：每個 skill 檔案嘅 function/step 登記（2026-10-29 用戶要求）
-# id | flow_registry_id | function_name | flow_id | line_number
+# id | flow_registry_id | function_name | formula_id | flow_id | line_number
 #   flow_registry_id -> flow_registry.id（邊個 skill 檔案 = subject）
 #   function_name    = function 真實名（AST 掃 = action）
+#   formula_id       -> template.formula.id（AST 掃描時登記，2026-10-29 用戶要求）
 #   flow_id          -> template.flow.id（flow 真 id，由 flow_name 真查 = object）
 #   line_number      = function 真實行號（AST 掃，零 hardcode）
 #
@@ -91,11 +92,16 @@ CREATE TABLE IF NOT EXISTS flow_registry (
 #   2. 全部 function 都係 step（包括 __init__ / close / helper），
 #      唔可以淨係登記 public function。加 function_name 欄位
 #      （AST 掃真實 function 名，零 hardcode）。
+#   3. 用戶：「why not register at ast too to have formula_id」——
+#      AST 掃描時同時喺 formula 表登記（full = function 名，
+#      package_id = taxonomy.registry.id，line = 真實行號），
+#      formula_id 就有真值（唔再係 NULL）。
 STEP_REGISTRY_DDL = """
 CREATE TABLE IF NOT EXISTS step_registry (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     flow_registry_id INTEGER NOT NULL,     -- flow_registry.id（邊個 skill 檔案 = subject）
     function_name    TEXT    NOT NULL,     -- function 真實名（AST 掃 = action）
+    formula_id       INTEGER,              -- template.formula.id（AST 掃描時登記）
     flow_id          INTEGER,              -- template.flow.id（flow 真 id = object）
     line_number      INTEGER NOT NULL DEFAULT 0,  -- function 真實行號（AST 掃）
     is_active        INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),

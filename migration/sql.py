@@ -51,6 +51,7 @@ class SqlStore:
         step_registry：每個檔案嘅全部 function（包括 __init__ / close / helper）
             flow_registry_id -> flow_registry.id（subject = 邊個 skill 檔案）
             function_name    = function 真實名（AST 掃 = action）
+            formula_id       -> template.formula.id（AST 掃描時登記，2026-10-29）
             flow_id          -> template.flow.id（object，由 flow_name 真查）
             line_number      = function 真實行號（AST 掃）
         """
@@ -76,6 +77,22 @@ class SqlStore:
                         "SELECT id, flow_name FROM flow"
                         " WHERE is_active = 1"):
                     flow_ids[r["flow_name"]] = r["id"]
+            finally:
+                tc.close()
+        except Exception:
+            pass
+        # taxonomy.registry.id by meta（migration = 1109，真查）
+        migration_tid = None
+        try:
+            tc = sqlite3.connect(
+                r"C:\projects\meta\taxonomy\taxonomy.db")
+            try:
+                tc.row_factory = sqlite3.Row
+                r = tc.execute(
+                    "SELECT id FROM registry WHERE tree_id = 2"
+                    " AND meta = 'migration' AND is_active = 1"
+                    " LIMIT 1").fetchone()
+                migration_tid = r["id"] if r else None
             finally:
                 tc.close()
         except Exception:
@@ -114,13 +131,44 @@ class SqlStore:
             # step_registry（每個 function 一行；冪等：UNIQUE 組合）
             fid = flow_ids.get(fname)
             for fname2, line in funcs:
+                # AST 掃描時同時喺 formula 表登記（full = function 名，
+                # package_id = migration registry id，line = 真實行號）
+                formula_id = None
+                if migration_tid:
+                    try:
+                        tc = sqlite3.connect(
+                            r"C:\projects\meta\template\template.db")
+                        try:
+                            tc.row_factory = sqlite3.Row
+                            # 冪等：full + package_id + line 已存在 -> 重用
+                            r = tc.execute(
+                                "SELECT id FROM formula"
+                                " WHERE full = ? AND package_id = ?"
+                                " AND line = ? AND is_active = 1 LIMIT 1",
+                                (fname2, migration_tid, line)).fetchone()
+                            if r:
+                                formula_id = r["id"]
+                            else:
+                                cur = tc.execute(
+                                    "INSERT INTO formula"
+                                    " (full, package_id, line)"
+                                    " VALUES (?, ?, ?)",
+                                    (fname2, migration_tid, line))
+                                tc.commit()
+                                formula_id = cur.lastrowid
+                        finally:
+                            tc.close()
+                    except Exception:
+                        formula_id = None
                 self.conn.execute(
                     "INSERT INTO step_registry"
-                    " (flow_registry_id, function_name, flow_id, line_number)"
-                    " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
+                    " (flow_registry_id, function_name, formula_id,"
+                    "  flow_id, line_number)"
+                    " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
                     " (SELECT 1 FROM step_registry"
                     "  WHERE flow_registry_id = ? AND function_name = ?)",
-                    (fr["id"], fname2, fid, line, fr["id"], fname2))
+                    (fr["id"], fname2, formula_id, fid, line,
+                     fr["id"], fname2))
         self.conn.commit()
 
     def _migrate_drop_flow_tables(self):
@@ -158,22 +206,22 @@ class SqlStore:
             print("[migration] migration_log + value_id 欄")
 
     def _migrate_step_registry_flow_id(self):
-        """遷移（幂等）：step_registry 加 function_name（2026-10-29 用戶指出）
+        """遷移（幂等）：step_registry 加 formula_id（2026-10-29 用戶要求）
 
-        用戶：「why didn't registry? they are step, why you remove field:
-        function_id」——全部 function 都係 step（包括 __init__ / close /
-        helper），唔可以淨係登記 public function；而且冇 function 名欄位
-        淨得 line_number 根本唔知邊個 function。
-        舊表（冇 function_name 欄）drop 重建；新表由 _seed_flow_registry
-        重新 seed（全部 function + function_name）。
+        用戶：「why not register at ast too to have formula_id」——
+        AST 掃描時同時喺 formula 表登記（full = function 名，
+        package_id = taxonomy.registry.id，line = 真實行號），
+        formula_id 就有真值。
+        舊表（冇 formula_id 欄）drop 重建；新表由 _seed_flow_registry
+        重新 seed（全部 function + function_name + formula_id）。
         """
         cols = {c[1] for c in self.conn.execute(
             "PRAGMA table_info('step_registry')")}
-        if "function_name" not in cols:
+        if "formula_id" not in cols:
             self.conn.execute("DROP TABLE step_registry")
             self.conn.execute(STEP_REGISTRY_DDL)
             self.conn.commit()
-            print("[migration] step_registry + function_name（drop 重建）")
+            print("[migration] step_registry + formula_id（drop 重建）")
 
     def _seed_types(self):
         """type 字典 seed（冪等：WHERE NOT EXISTS，唔燒 AUTOINCREMENT 號）"""
