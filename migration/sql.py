@@ -343,93 +343,10 @@ class SqlStore:
         return self.conn.execute(
             "SELECT COUNT(*) FROM migration_log").fetchone()[0]
 
-    def check_column(self, module_name, table, column):
-        """真實檢查：column 存唔存在（PRAGMA table_info 權威，唔 hardcode）
-
-        module_name = taxonomy.registry.meta（邊個 module；決定 db 檔）
-        table       = 張表名
-        column      = 欄位名
-
-        返回 {"exists": bool, "db_file": str, "table": str, "column": str}
-        """
-        import os
-        db_file = None
-        exists = False
-        if module_name and table and column:
-            # module 名 -> db 檔（檔名 = meta.db，位置 = meta/ 資料夾）
-            p = os.path.join(r"C:\projects\meta", module_name,
-                             f"{module_name}.db")
-            if os.path.isfile(p):
-                db_file = p
-                import sqlite3 as _sq
-                c2 = _sq.connect(p)
-                try:
-                    cols = {r[1] for r in c2.execute(
-                        f"PRAGMA table_info('{table}')").fetchall()}
-                    exists = column in cols
-                except Exception:
-                    exists = False
-                finally:
-                    c2.close()
-        return {"exists": exists, "db_file": db_file,
-                "table": table, "column": column}
-
-    def add_column(self, module_name, table, column, column_type="TEXT"):
-        """真實加欄位（ALTER TABLE ADD COLUMN；冪等，唔 hardcode）
-
-        module_name = taxonomy.registry.meta（邊個 module；決定 db 檔）
-        table       = 張表名
-        column      = 欄位名
-        column_type = SQL 型別（db_field_type.meta 權威；預設 TEXT）
-
-        流程：
-            1. 真查 target db 有冇欄位（PRAGMA）
-            2. 有 -> 唔加（idempotent，already=True）
-            3. 冇 -> ALTER TABLE ADD COLUMN（真實 SQL）
-            4. 加完 -> 真查確認
-        返回 {"added": bool, "already": bool, "exists": bool,
-              "db_file": str, "table": str, "column": str,
-              "column_type": str, "error": str}
-        """
-        import os
-        db_file = None
-        exists = False
-        added = False
-        already = False
-        err = None
-        if module_name and table and column:
-            p = os.path.join(r"C:\projects\meta", module_name,
-                             f"{module_name}.db")
-            if os.path.isfile(p):
-                db_file = p
-                import sqlite3 as _sq
-                c2 = _sq.connect(p)
-                try:
-                    cols = {r[1] for r in c2.execute(
-                        f"PRAGMA table_info('{table}')").fetchall()}
-                    exists = column in cols
-                    if exists:
-                        already = True
-                    else:
-                        # 真實 ALTER（column 名用引號，type 由權威）
-                        c2.execute(
-                            f"ALTER TABLE '{table}' ADD COLUMN"
-                            f" '{column}' {column_type}")
-                        c2.commit()
-                        # 加完真查確認
-                        cols2 = {r[1] for r in c2.execute(
-                            f"PRAGMA table_info('{table}')").fetchall()}
-                        exists = column in cols2
-                        added = exists
-                except Exception as e:
-                    err = str(e)
-                finally:
-                    c2.close()
-        return {"added": added, "already": already, "exists": exists,
-                "db_file": db_file, "table": table, "column": column,
-                "column_type": column_type, "error": err}
-
     # ---------- migrate_schema 其餘真 action（2026-10-29 用戶要求）----------
+    # 註：inspect_table / check_column / add_column / backfill_column /
+    #     verify_column / verify_rowcount / report 已搬去 skill.py
+    #     （SchemaSkill，2026-10-29 用戶要求：package migration > skill）
 
     def _target_db(self, module_name):
         """module 名 -> (db 路徑, 資料夾名)；default = migration.db"""
@@ -473,65 +390,6 @@ class SqlStore:
                 c.close()
         except Exception:
             return 0
-
-    def inspect_table(self, module_name, table):
-        """真實 inspect：PRAGMA table_info 攞欄位清單 + column_count"""
-        dbp, _ = self._target_db(module_name)
-        cols = []
-        import sqlite3 as _sq
-        try:
-            c = _sq.connect(dbp)
-            try:
-                cols = [dict(zip(("name", "type", "notnull", "dflt", "pk"), r))
-                        for r in c.execute(f"PRAGMA table_info('{table}')")]
-            finally:
-                c.close()
-        except Exception:
-            cols = []
-        return {"table": table, "db_file": dbp,
-                "columns": [x["name"] for x in cols],
-                "column_count": len(cols), "exists": bool(cols)}
-
-    def backfill_column(self, module_name, table, column):
-        """真實回填：count 有值嘅 row 數（冇欄 -> 0）"""
-        dbp, _ = self._target_db(module_name)
-        n = self._count_of(
-            dbp, table, f"\"{column}\" IS NOT NULL AND \"{column}\" != ''")
-        return {"table": table, "column": column, "backfilled": n,
-                "db_file": dbp}
-
-    def verify_column(self, module_name, table, column):
-        """真實 verify：PRAGMA 確認欄位存在"""
-        r = self.check_column(module_name, table, column)
-        return {"verified": r["exists"], "table": table,
-                "column": column, "db_file": r["db_file"]}
-
-    def verify_rowcount(self, module_name, table):
-        """真實 verify rowcount：count(*)"""
-        dbp, _ = self._target_db(module_name)
-        return {"table": table, "rowcount": self._count_of(dbp, table),
-                "db_file": dbp}
-
-    def report(self, module_name, table=None):
-        """真實 report：migration_log 統計（module 過濾）"""
-        where = []
-        args = []
-        if module_name:
-            tid = self._taxonomy_id(module_name)
-            if tid:
-                where.append("ml.taxonomy_id = ?")
-                args.append(tid)
-        if table:
-            where.append("ml.structure_db_table = ?")
-            args.append(table)
-        w = (" WHERE " + " AND ".join(where)) if where else ""
-        rows = [dict(r) for r in self.conn.execute(
-            f"SELECT ml.id, ml.type_id, t.value AS type_value,"
-            f" ml.structure_db_table, ml.description, ml.row_id,"
-            f" ml.created_at FROM migration_log ml"
-            f" LEFT JOIN type t ON t.id = ml.type_id{w}"
-            f" ORDER BY ml.id DESC LIMIT 50", args)]
-        return {"rows": rows, "count": len(rows)}
 
     def check_dictionary(self, module_name, table):
         """真實 check dictionary：已有值清單（table 唔存在 -> []）"""

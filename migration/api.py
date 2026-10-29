@@ -42,41 +42,71 @@ class Migration:
     def check_column(self, module_name, table, column):
         """真實檢查：column 存唔存在（PRAGMA table_info 權威）
 
-        module_name = taxonomy.registry.meta（邊個 module；決定 db 檔）
-        table       = 張表名
-        column      = 欄位名
-
-        返回 {"exists": bool, "db_file": str, "table": str, "column": str}
+        已搬去 skill.py（SchemaSkill，2026-10-29 用戶要求）。
         """
-        return self.store.check_column(module_name, table, column)
+        from .skill import SchemaSkill
+        s = SchemaSkill()
+        try:
+            return s.check_column(module_name, table, column)
+        finally:
+            s.close()
 
     def add_column(self, module_name, table, column, column_type="TEXT"):
         """真實加欄位（ALTER TABLE ADD COLUMN；冪等）
 
-        返回 {"added": bool, "already": bool, "exists": bool, ...}
+        已搬去 skill.py（SchemaSkill，2026-10-29 用戶要求）。
         """
-        return self.store.add_column(module_name, table, column,
-                                     column_type)
+        from .skill import SchemaSkill
+        s = SchemaSkill()
+        try:
+            return s.add_column(module_name, table, column, column_type)
+        finally:
+            s.close()
 
     def inspect_table(self, module_name, table):
-        """真實 inspect：PRAGMA table_info 攞欄位清單"""
-        return self.store.inspect_table(module_name, table)
+        """真實 inspect：PRAGMA table_info 攞欄位清單（skill.py）"""
+        from .skill import SchemaSkill
+        s = SchemaSkill()
+        try:
+            return s.inspect_table(module_name, table)
+        finally:
+            s.close()
 
     def backfill_column(self, module_name, table, column):
-        """真實回填：count 有值 row 數"""
-        return self.store.backfill_column(module_name, table, column)
+        """真實回填：count 有值 row 數（skill.py）"""
+        from .skill import SchemaSkill
+        s = SchemaSkill()
+        try:
+            return s.backfill_column(module_name, table, column)
+        finally:
+            s.close()
 
     def verify_column(self, module_name, table, column):
-        """真實 verify：PRAGMA 確認欄位存在"""
-        return self.store.verify_column(module_name, table, column)
+        """真實 verify：PRAGMA 確認欄位存在（skill.py）"""
+        from .skill import SchemaSkill
+        s = SchemaSkill()
+        try:
+            return s.verify_column(module_name, table, column)
+        finally:
+            s.close()
 
     def verify_rowcount(self, module_name, table):
-        """真實 verify rowcount：count(*)"""
-        return self.store.verify_rowcount(module_name, table)
+        """真實 verify rowcount：count(*)（skill.py）"""
+        from .skill import SchemaSkill
+        s = SchemaSkill()
+        try:
+            return s.verify_rowcount(module_name, table)
+        finally:
+            s.close()
 
     def report(self, module_name=None, table=None):
-        """真實 report：migration_log 統計"""
-        return self.store.report(module_name, table)
+        """真實 report：migration_log 統計（skill.py）"""
+        from .skill import SchemaSkill
+        s = SchemaSkill()
+        try:
+            return s.report(module_name, table)
+        finally:
+            s.close()
 
     def check_dictionary(self, module_name, table):
         """真實 check dictionary：已有值清單"""
