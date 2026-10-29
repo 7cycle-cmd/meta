@@ -109,76 +109,161 @@ class Migration:
             s.close()
 
     def check_dictionary(self, module_name, table):
-        """真實 check dictionary：已有值清單"""
-        return self.store.check_dictionary(module_name, table)
+        """真實 check dictionary：已有值清單（skill/seed.py）"""
+        from .skill.seed import SeedSkill
+        s = SeedSkill()
+        try:
+            return s.check_dictionary(module_name, table)
+        finally:
+            s.close()
 
     def check_symbol(self, module_name, table, symbol, column="symbol"):
-        """真實 check symbol：有冇呢個 symbol"""
-        return self.store.check_symbol(module_name, table, symbol, column)
+        """真實 check symbol：有冇呢個 symbol（skill/seed.py）"""
+        from .skill.seed import SeedSkill
+        s = SeedSkill()
+        try:
+            return s.check_symbol(module_name, table, symbol, column)
+        finally:
+            s.close()
 
     def insert_symbol(self, module_name, table, symbol, description=None,
                       column="symbol"):
-        """真實 insert symbol（冪等）"""
-        return self.store.insert_symbol(module_name, table, symbol,
-                                        description, column)
+        """真實 insert symbol（冪等）（skill/seed.py）"""
+        from .skill.seed import SeedSkill
+        s = SeedSkill()
+        try:
+            return s.insert_symbol(module_name, table, symbol,
+                                   description, column)
+        finally:
+            s.close()
 
     def verify_symbol(self, module_name, table, symbol, column="symbol"):
-        """真實 verify symbol：SELECT 確認存在"""
-        return self.store.verify_symbol(module_name, table, symbol, column)
+        """真實 verify symbol：SELECT 確認存在（skill/seed.py）"""
+        from .skill.seed import SeedSkill
+        s = SeedSkill()
+        try:
+            return s.verify_symbol(module_name, table, symbol, column)
+        finally:
+            s.close()
 
     def check_source(self, module_name, table=None):
-        """真實 check source：source 表記錄數"""
-        return self.store.check_source(module_name, table)
+        """真實 check source：source 表記錄數（skill/sync.py）"""
+        from .skill.sync import SyncSkill
+        s = SyncSkill()
+        try:
+            return s.check_source(module_name, table)
+        finally:
+            s.close()
 
     def fetch_external(self, module_name, url, table="postman_sync"):
-        """真實 fetch external：POST 記錄"""
-        return self.store.fetch_external(module_name, url, table)
+        """真實 fetch external：POST 記錄（skill/sync.py）"""
+        from .skill.sync import SyncSkill
+        s = SyncSkill()
+        try:
+            return s.fetch_external(module_name, url, table)
+        finally:
+            s.close()
 
     def map_to_local(self, module_name, table, raw_json=None):
-        """真實 map：structure.db 有冇登記"""
-        return self.store.map_to_local(module_name, table, raw_json)
+        """真實 map：structure.db 有冇登記（skill/sync.py）"""
+        from .skill.sync import SyncSkill
+        s = SyncSkill()
+        try:
+            return s.map_to_local(module_name, table, raw_json)
+        finally:
+            s.close()
 
     def upsert_local(self, module_name, table, key_column, key_value,
                      data=None):
-        """真實 upsert local（冪等）"""
-        return self.store.upsert_local(module_name, table, key_column,
-                                       key_value, data)
+        """真實 upsert local（冪等）（skill/sync.py）"""
+        from .skill.sync import SyncSkill
+        s = SyncSkill()
+        try:
+            return s.upsert_local(module_name, table, key_column,
+                                  key_value, data)
+        finally:
+            s.close()
 
     def verify_count(self, module_name, table, expected=None):
-        """真實 verify count：count(*) 對比 expected"""
-        return self.store.verify_count(module_name, table, expected)
+        """真實 verify count：count(*) 對比 expected（skill/sync.py）"""
+        from .skill.sync import SyncSkill
+        s = SyncSkill()
+        try:
+            return s.verify_count(module_name, table, expected)
+        finally:
+            s.close()
 
     def backup_table(self, module_name, table):
-        """真實 backup：CREATE TABLE backup AS SELECT"""
-        return self.store.backup_table(module_name, table)
+        """真實 backup：CREATE TABLE backup AS SELECT（skill/cutover.py）"""
+        from .skill.cutover import CutoverSkill
+        s = CutoverSkill()
+        try:
+            return s.backup_table(module_name, table)
+        finally:
+            s.close()
 
     def create_new_table(self, module_name, table, ddl=None):
-        """真實 create new table"""
-        return self.store.create_new_table(module_name, table, ddl)
+        """真實 create new table（skill/cutover.py）"""
+        from .skill.cutover import CutoverSkill
+        s = CutoverSkill()
+        try:
+            return s.create_new_table(module_name, table, ddl)
+        finally:
+            s.close()
 
     def copy_rows(self, module_name, src_table, dst_table):
-        """真實 copy rows"""
-        return self.store.copy_rows(module_name, src_table, dst_table)
+        """真實 copy rows（skill/cutover.py）"""
+        from .skill.cutover import CutoverSkill
+        s = CutoverSkill()
+        try:
+            return s.copy_rows(module_name, src_table, dst_table)
+        finally:
+            s.close()
 
     def swap_table(self, module_name, new_table, old_table):
-        """真實 swap：RENAME"""
-        return self.store.swap_table(module_name, new_table, old_table)
+        """真實 swap：RENAME（skill/cutover.py）"""
+        from .skill.cutover import CutoverSkill
+        s = CutoverSkill()
+        try:
+            return s.swap_table(module_name, new_table, old_table)
+        finally:
+            s.close()
 
     def verify_foreign_keys(self, module_name, table=None):
-        """真實 verify foreign keys：PRAGMA foreign_key_check"""
-        return self.store.verify_foreign_keys(module_name, table)
+        """真實 verify foreign keys：PRAGMA foreign_key_check（skill/cutover.py）"""
+        from .skill.cutover import CutoverSkill
+        s = CutoverSkill()
+        try:
+            return s.verify_foreign_keys(module_name, table)
+        finally:
+            s.close()
 
     def inspect(self, module_name, table):
-        """真實 inspect（migrate_other）"""
-        return self.store.inspect(module_name, table)
+        """真實 inspect（migrate_other）（skill/other.py）"""
+        from .skill.other import OtherSkill
+        s = OtherSkill()
+        try:
+            return s.inspect(module_name, table)
+        finally:
+            s.close()
 
     def action(self, module_name, table, action_type="migrate_log"):
-        """真實 action（migrate_other）：寫 migration_log"""
-        return self.store.action(module_name, table, action_type)
+        """真實 action（migrate_other）：寫 migration_log（skill/other.py）"""
+        from .skill.other import OtherSkill
+        s = OtherSkill()
+        try:
+            return s.action(module_name, table, action_type)
+        finally:
+            s.close()
 
     def verify(self, module_name, table, expected=None):
-        """真實 verify（migrate_other）"""
-        return self.store.verify(module_name, table, expected)
+        """真實 verify（migrate_other）（skill/other.py）"""
+        from .skill.other import OtherSkill
+        s = OtherSkill()
+        try:
+            return s.verify(module_name, table, expected)
+        finally:
+            s.close()
 
     def close(self):
         self.store.close()
