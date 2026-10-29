@@ -48,9 +48,10 @@ class SqlStore:
 
         flow_registry：6 個 skill 檔案（audit/schema/seed/sync/cutover/other）
             total_line = 檔案真實行數（AST 掃，零 hardcode）
-        step_registry：每個檔案嘅 public function
-            flow_registry_id -> flow_registry.id
-            flow_id          -> template.flow.id（由 flow_name 真查，零 hardcode）
+        step_registry：每個檔案嘅全部 function（包括 __init__ / close / helper）
+            flow_registry_id -> flow_registry.id（subject = 邊個 skill 檔案）
+            function_name    = function 真實名（AST 掃 = action）
+            flow_id          -> template.flow.id（object，由 flow_name 真查）
             line_number      = function 真實行號（AST 掃）
         """
         import os as _os
@@ -91,8 +92,7 @@ class SqlStore:
                 for node in _ast_m.walk(tree):
                     if isinstance(node, (_ast_m.FunctionDef,
                                          _ast_m.AsyncFunctionDef)):
-                        if node.name.startswith("_"):
-                            continue
+                        # 全部 function 都係 step（包括 __init__ / close / helper）
                         funcs.append((node.name, node.lineno))
             except (OSError, SyntaxError):
                 pass
@@ -116,11 +116,11 @@ class SqlStore:
             for fname2, line in funcs:
                 self.conn.execute(
                     "INSERT INTO step_registry"
-                    " (flow_registry_id, flow_id, line_number)"
-                    " SELECT ?, ?, ? WHERE NOT EXISTS"
+                    " (flow_registry_id, function_name, flow_id, line_number)"
+                    " SELECT ?, ?, ?, ? WHERE NOT EXISTS"
                     " (SELECT 1 FROM step_registry"
-                    "  WHERE flow_registry_id = ? AND line_number = ?)",
-                    (fr["id"], fid, line, fr["id"], line))
+                    "  WHERE flow_registry_id = ? AND function_name = ?)",
+                    (fr["id"], fname2, fid, line, fr["id"], fname2))
         self.conn.commit()
 
     def _migrate_drop_flow_tables(self):
@@ -158,20 +158,22 @@ class SqlStore:
             print("[migration] migration_log + value_id 欄")
 
     def _migrate_step_registry_flow_id(self):
-        """遷移（幂等）：step_registry formula_id -> flow_id（2026-10-29 實查修正）
+        """遷移（幂等）：step_registry 加 function_name（2026-10-29 用戶指出）
 
-        formula_id 指向 template.formula（全部係 `xxx=<select...>` 字串模板），
-        migration skill function 喺 formula 表冇對應記錄 -> formula_id 永遠
-        NULL 冇意義。改為 flow_id（template.flow.id，由 flow_name 真查）。
-        舊表（有 formula_id 欄）drop 重建；新表由 _seed_flow_registry 重新 seed。
+        用戶：「why didn't registry? they are step, why you remove field:
+        function_id」——全部 function 都係 step（包括 __init__ / close /
+        helper），唔可以淨係登記 public function；而且冇 function 名欄位
+        淨得 line_number 根本唔知邊個 function。
+        舊表（冇 function_name 欄）drop 重建；新表由 _seed_flow_registry
+        重新 seed（全部 function + function_name）。
         """
         cols = {c[1] for c in self.conn.execute(
             "PRAGMA table_info('step_registry')")}
-        if "formula_id" in cols:
+        if "function_name" not in cols:
             self.conn.execute("DROP TABLE step_registry")
             self.conn.execute(STEP_REGISTRY_DDL)
             self.conn.commit()
-            print("[migration] step_registry formula_id -> flow_id（drop 重建）")
+            print("[migration] step_registry + function_name（drop 重建）")
 
     def _seed_types(self):
         """type 字典 seed（冪等：WHERE NOT EXISTS，唔燒 AUTOINCREMENT 號）"""

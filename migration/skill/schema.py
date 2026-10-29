@@ -77,22 +77,26 @@ CREATE TABLE IF NOT EXISTS flow_registry (
 """
 
 # step_registry：每個 skill 檔案嘅 function/step 登記（2026-10-29 用戶要求）
-# id | flow_registry_id | formula_id | line_number
-#   flow_registry_id -> flow_registry.id（邊個 skill 檔案）
-#   formula_id       -> template.formula.id（formula 真 id，冇 -> NULL）
+# id | flow_registry_id | function_name | flow_id | line_number
+#   flow_registry_id -> flow_registry.id（邊個 skill 檔案 = subject）
+#   function_name    = function 真實名（AST 掃 = action）
+#   flow_id          -> template.flow.id（flow 真 id，由 flow_name 真查 = object）
 #   line_number      = function 真實行號（AST 掃，零 hardcode）
 #
-# 2026-10-29 實查修正：template.formula 表（447 行）全部係
-# `xxx=<select ...>` 字串模板（驗證鏈用），migration skill 嘅 function
-# 喺 formula 表冇對應記錄 -> formula_id 永遠 NULL，冇意義。
-# 真正嘅 flow/step 登記喺 template.db：flow（id|flow_name，schema=8）
-# + step（id|flow_id|question_id|seq_id）。所以 formula_id 欄位
-# 改為 flow_id（template.flow.id，由 flow_name 真查，零 hardcode）。
+# 2026-10-29 實查修正（用戶指出）：
+#   1. formula_id 指向 template.formula（全部係 `xxx=<select ...>` 字串模板，
+#      method 欄位只有 GET），migration skill 嘅 function 喺 formula 表
+#      冇對應記錄 -> formula_id 永遠 NULL，冇意義。改為 flow_id
+#      （template.flow.id，由 flow_name 真查，零 hardcode）。
+#   2. 全部 function 都係 step（包括 __init__ / close / helper），
+#      唔可以淨係登記 public function。加 function_name 欄位
+#      （AST 掃真實 function 名，零 hardcode）。
 STEP_REGISTRY_DDL = """
 CREATE TABLE IF NOT EXISTS step_registry (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    flow_registry_id INTEGER NOT NULL,     -- flow_registry.id（邊個 skill 檔案）
-    flow_id          INTEGER,              -- template.flow.id（flow 真 id，由 flow_name 真查）
+    flow_registry_id INTEGER NOT NULL,     -- flow_registry.id（邊個 skill 檔案 = subject）
+    function_name    TEXT    NOT NULL,     -- function 真實名（AST 掃 = action）
+    flow_id          INTEGER,              -- template.flow.id（flow 真 id = object）
     line_number      INTEGER NOT NULL DEFAULT 0,  -- function 真實行號（AST 掃）
     is_active        INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at       TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
