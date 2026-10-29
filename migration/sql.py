@@ -12,7 +12,8 @@
 import os
 import sqlite3
 
-from .skill.schema import (MIGRATION_LOG_DDL, TYPE_DDL)  # noqa: F401
+from .skill.schema import (MIGRATION_LOG_DDL, TYPE_DDL,
+                           FLOW_REGISTRY_DDL, STEP_REGISTRY_DDL)  # noqa: F401
 
 DB_PATH = r"C:\projects\meta\migration\migration.db"
 
@@ -32,10 +33,77 @@ class SqlStore:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute(TYPE_DDL)
         self.conn.execute(MIGRATION_LOG_DDL)
+        self.conn.execute(FLOW_REGISTRY_DDL)
+        self.conn.execute(STEP_REGISTRY_DDL)
         self._seed_types()
         self._migrate_type_id()
         self._migrate_log_flow_columns()
         self._migrate_drop_flow_tables()
+        self._seed_flow_registry()
+        self.conn.commit()
+
+    def _seed_flow_registry(self):
+        """遷移（幂等）：flow_registry + step_registry seed（2026-10-29 用戶要求）
+
+        flow_registry：6 個 skill 檔案（audit/schema/seed/sync/cutover/other）
+            total_line = 檔案真實行數（AST 掃，零 hardcode）
+        step_registry：每個檔案嘅 public function
+            flow_registry_id -> flow_registry.id
+            formula_id       -> template.formula.id（冇 -> NULL）
+            line_number      = function 真實行號（AST 掃）
+        """
+        import os as _os
+        import importlib.util as _ilu
+        # 標準庫 ast（cwd 有 ast package shadow）
+        _ast_sp = _ilu.spec_from_file_location(
+            "_stdlib_ast",
+            _os.path.join(_os.path.dirname(_os.__file__), "ast.py"))
+        _ast_m = _ilu.module_from_spec(_ast_sp)
+        _ast_sp.loader.exec_module(_ast_m)
+        skill_dir = _os.path.join(r"C:\projects\meta", "migration", "skill")
+        # 6 個 skill 檔案（用戶指定順序）
+        files = ["audit", "schema", "seed", "sync", "cutover", "other"]
+        for fname in files:
+            path = _os.path.join(skill_dir, f"{fname}.py")
+            total = 0
+            funcs = []
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    src = f.read()
+                total = src.count("\n") + 1
+                tree = _ast_m.parse(src)
+                for node in _ast_m.walk(tree):
+                    if isinstance(node, (_ast_m.FunctionDef,
+                                         _ast_m.AsyncFunctionDef)):
+                        if node.name.startswith("_"):
+                            continue
+                        funcs.append((node.name, node.lineno))
+            except (OSError, SyntaxError):
+                pass
+            # flow_registry（filename UNIQUE -> 冪等）
+            self.conn.execute(
+                "INSERT INTO flow_registry (filename, total_line)"
+                " SELECT ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM flow_registry WHERE filename = ?)",
+                (fname, total, fname))
+            fr = self.conn.execute(
+                "SELECT id FROM flow_registry WHERE filename = ?",
+                (fname,)).fetchone()
+            if not fr:
+                continue
+            # 更新 total_line（每次跑同步真實行數）
+            self.conn.execute(
+                "UPDATE flow_registry SET total_line = ? WHERE id = ?",
+                (total, fr["id"]))
+            # step_registry（每個 function 一行；冪等：UNIQUE 組合）
+            for fname2, line in funcs:
+                self.conn.execute(
+                    "INSERT INTO step_registry"
+                    " (flow_registry_id, line_number)"
+                    " SELECT ?, ? WHERE NOT EXISTS"
+                    " (SELECT 1 FROM step_registry"
+                    "  WHERE flow_registry_id = ? AND line_number = ?)",
+                    (fr["id"], line, fr["id"], line))
         self.conn.commit()
 
     def _migrate_drop_flow_tables(self):

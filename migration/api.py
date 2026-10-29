@@ -39,6 +39,31 @@ class Migration:
         return {"total": self.store.count(),
                 "by_module": self.store.by_module()}
 
+    def flow_registry(self, active_only=True):
+        """列出 flow_registry（6 個 skill 檔案 + 真實行數）"""
+        sql = "SELECT * FROM flow_registry"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.store.conn.execute(sql)]
+
+    def step_registry(self, flow_registry_id=None, active_only=True):
+        """列出 step_registry（每個 skill 檔案嘅 function + 行號）"""
+        sql = ("SELECT sr.*, fr.filename"
+               " FROM step_registry sr"
+               " LEFT JOIN flow_registry fr ON fr.id = sr.flow_registry_id")
+        args = ()
+        where = []
+        if flow_registry_id is not None:
+            where.append("sr.flow_registry_id = ?")
+            args = (flow_registry_id,)
+        if active_only:
+            where.append("sr.is_active = 1")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY sr.flow_registry_id, sr.line_number"
+        return [dict(r) for r in self.store.conn.execute(sql, args)]
+
     def check_column(self, module_name, table, column):
         """真實檢查：column 存唔存在（PRAGMA table_info 權威）
 

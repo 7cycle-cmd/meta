@@ -62,7 +62,38 @@ CREATE TABLE IF NOT EXISTS migration_log (
 );
 """
 
-__all__ = ["TYPE_DDL", "MIGRATION_LOG_DDL", "SchemaSkill"]
+# flow_registry：migration 技能檔案登記（2026-10-29 用戶要求）
+# id | filename | total_line
+#   1 | audit | 4 | sync | 5 | cutover | 6 | other
+# total_line = 檔案真實行數（AST 掃，零 hardcode）
+FLOW_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS flow_registry (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename   TEXT    NOT NULL UNIQUE,   -- skill 檔名（audit/schema/seed/sync/cutover/other）
+    total_line INTEGER NOT NULL DEFAULT 0, -- 檔案真實行數（AST 掃）
+    is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# step_registry：每個 skill 檔案嘅 function/step 登記（2026-10-29 用戶要求）
+# id | flow_registry_id | formula_id | line_number
+#   flow_registry_id -> flow_registry.id（邊個 skill 檔案）
+#   formula_id       -> template.formula.id（formula 真 id，冇 -> NULL）
+#   line_number      = function 真實行號（AST 掃，零 hardcode）
+STEP_REGISTRY_DDL = """
+CREATE TABLE IF NOT EXISTS step_registry (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    flow_registry_id INTEGER NOT NULL,     -- flow_registry.id（邊個 skill 檔案）
+    formula_id       INTEGER,              -- template.formula.id（formula 真 id）
+    line_number      INTEGER NOT NULL DEFAULT 0,  -- function 真實行號（AST 掃）
+    is_active        INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+__all__ = ["TYPE_DDL", "MIGRATION_LOG_DDL", "FLOW_REGISTRY_DDL",
+           "STEP_REGISTRY_DDL", "SchemaSkill"]
 
 
 class SchemaSkill:
