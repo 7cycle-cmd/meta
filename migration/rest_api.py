@@ -41,6 +41,27 @@ class MigrationHandler(BaseHTTPRequestHandler):
                               migration_type=q.get("type"))
                 self._send(200, {"migrations": rows,
                                  "total": len(rows)})
+            elif path == "/asset-types":
+                self._send(200, {"asset_types": m.asset_types()})
+            elif path == "/assets":
+                q = {}
+                if "?" in self.path:
+                    for kv in self.path.split("?", 1)[1].split("&"):
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            q[k] = v
+                aid = int(q["asset_type_id"]) if q.get("asset_type_id") \
+                    else None
+                self._send(200, {"assets": m.assets(asset_type_id=aid)})
+            elif path == "/resources":
+                q = {}
+                if "?" in self.path:
+                    for kv in self.path.split("?", 1)[1].split("&"):
+                        if "=" in kv:
+                            k, v = kv.split("=", 1)
+                            q[k] = v
+                aid = int(q["asset_id"]) if q.get("asset_id") else None
+                self._send(200, {"resources": m.resources(asset_id=aid)})
             elif path == "/health":
                 self._send(200, {"status": "ok",
                                  "module": "migration"})

@@ -67,6 +67,49 @@ class Migration:
         sql += " ORDER BY sr.flow_registry_id, sr.line_number"
         return [dict(r) for r in self.store.conn.execute(sql, args)]
 
+    def asset_types(self, active_only=True):
+        """列出 asset_type（package / file）"""
+        sql = "SELECT * FROM asset_type"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY id"
+        return [dict(r) for r in self.store.conn.execute(sql)]
+
+    def assets(self, asset_type_id=None, active_only=True):
+        """列出 asset（package / file 資產）"""
+        sql = ("SELECT a.*, at.value AS asset_type_value"
+               " FROM asset a"
+               " LEFT JOIN asset_type at ON at.id = a.asset_type_id")
+        args = ()
+        where = []
+        if asset_type_id is not None:
+            where.append("a.asset_type_id = ?")
+            args = (asset_type_id,)
+        if active_only:
+            where.append("a.is_active = 1")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY a.id"
+        return [dict(r) for r in self.store.conn.execute(sql, args)]
+
+    def resources(self, asset_id=None, active_only=True):
+        """列出 resource（function 資源，type_id = structure.resource_type.id）"""
+        sql = ("SELECT r.*, a.value AS asset_value, at.value AS asset_type_value"
+               " FROM resource r"
+               " LEFT JOIN asset a ON a.id = r.asset_id"
+               " LEFT JOIN asset_type at ON at.id = a.asset_type_id")
+        args = ()
+        where = []
+        if asset_id is not None:
+            where.append("r.asset_id = ?")
+            args = (asset_id,)
+        if active_only:
+            where.append("r.is_active = 1")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY r.asset_id, r.start_line"
+        return [dict(r) for r in self.store.conn.execute(sql, args)]
+
     def check_column(self, module_name, table, column):
         """真實檢查：column 存唔存在（PRAGMA table_info 權威）
 

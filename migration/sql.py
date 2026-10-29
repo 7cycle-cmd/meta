@@ -13,7 +13,8 @@ import os
 import sqlite3
 
 from .skill.schema import (MIGRATION_LOG_DDL, TYPE_DDL,
-                           FLOW_REGISTRY_DDL, STEP_REGISTRY_DDL)  # noqa: F401
+                           FLOW_REGISTRY_DDL, STEP_REGISTRY_DDL,
+                           ASSET_TYPE_DDL, ASSET_DDL, RESOURCE_DDL)  # noqa: F401
 
 DB_PATH = r"C:\projects\meta\migration\migration.db"
 
@@ -35,12 +36,106 @@ class SqlStore:
         self.conn.execute(MIGRATION_LOG_DDL)
         self.conn.execute(FLOW_REGISTRY_DDL)
         self.conn.execute(STEP_REGISTRY_DDL)
+        self.conn.execute(ASSET_TYPE_DDL)
+        self.conn.execute(ASSET_DDL)
+        self.conn.execute(RESOURCE_DDL)
         self._seed_types()
         self._migrate_type_id()
         self._migrate_log_flow_columns()
         self._migrate_drop_flow_tables()
         self._migrate_step_registry_flow_id()
         self._seed_flow_registry()
+        self._seed_asset_resource()
+        self.conn.commit()
+
+    def _seed_asset_resource(self):
+        """遷移（幂等）：asset_type + asset + resource seed（2026-10-29 用戶要求）
+
+        asset_type：package / file（2 類資產）
+        asset：6 個 skill 檔案（file 層）+ migration package（package 層）
+        resource：每個 function（AST 掃真實 start/end line）
+            type_id  -> structure.db resource_type.id（真查，零 hardcode）
+            name     = function 名
+            asset_id -> asset.id（邊個檔案）
+        """
+        import os as _os
+        import importlib.util as _ilu
+        # 標準庫 ast（cwd 有 ast package shadow）
+        _ast_sp = _ilu.spec_from_file_location(
+            "_stdlib_ast",
+            _os.path.join(_os.path.dirname(_os.__file__), "ast.py"))
+        _ast_m = _ilu.module_from_spec(_ast_sp)
+        _ast_sp.loader.exec_module(_ast_m)
+        # asset_type seed（冪等：value UNIQUE）
+        for v, d in (("package", "package 資產（module 資料夾）"),
+                     ("file", "file 資產（.py 檔）")):
+            self.conn.execute(
+                "INSERT INTO asset_type (value, description)"
+                " SELECT ?, ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM asset_type WHERE value = ?)",
+                (v, d, v))
+        # structure.db resource_type.id by value（真查，零 hardcode）
+        type_ids = {}
+        try:
+            sc = sqlite3.connect(
+                r"C:\projects\meta\structure\structure.db")
+            try:
+                sc.row_factory = sqlite3.Row
+                for r in sc.execute(
+                        "SELECT id, value FROM resource_type"
+                        " WHERE is_active = 1"):
+                    type_ids[r["value"]] = r["id"]
+            finally:
+                sc.close()
+        except Exception:
+            pass
+        # asset：migration package（package 層）
+        self.conn.execute(
+            "INSERT INTO asset (asset_type_id, value)"
+            " SELECT (SELECT id FROM asset_type WHERE value = 'package'),"
+            " 'migration' WHERE NOT EXISTS"
+            " (SELECT 1 FROM asset WHERE asset_type_id ="
+            "  (SELECT id FROM asset_type WHERE value = 'package')"
+            "  AND value = 'migration')")
+        # asset：6 個 skill 檔案（file 層）+ resource：每個 function
+        skill_dir = _os.path.join(r"C:\projects\meta", "migration", "skill")
+        files = ["audit", "schema", "seed", "sync", "cutover", "other"]
+        for fname in files:
+            path = _os.path.join(skill_dir, f"{fname}.py")
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    src = f.read()
+                tree = _ast_m.parse(src)
+            except (OSError, SyntaxError):
+                continue
+            # asset（file 層，冪等）
+            self.conn.execute(
+                "INSERT INTO asset (asset_type_id, value)"
+                " SELECT (SELECT id FROM asset_type WHERE value = 'file'),"
+                " ? WHERE NOT EXISTS"
+                " (SELECT 1 FROM asset WHERE asset_type_id ="
+                "  (SELECT id FROM asset_type WHERE value = 'file')"
+                "  AND value = ?)",
+                (fname, fname))
+            a = self.conn.execute(
+                "SELECT id FROM asset WHERE asset_type_id ="
+                " (SELECT id FROM asset_type WHERE value = 'file')"
+                " AND value = ?", (fname,)).fetchone()
+            if not a:
+                continue
+            # resource：每個 function（AST 掃 start/end line）
+            fid = type_ids.get("function")
+            for node in _ast_m.walk(tree):
+                if isinstance(node, (_ast_m.FunctionDef,
+                                     _ast_m.AsyncFunctionDef)):
+                    self.conn.execute(
+                        "INSERT INTO resource"
+                        " (type_id, start_line, end_line, name, asset_id)"
+                        " SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS"
+                        " (SELECT 1 FROM resource"
+                        "  WHERE name = ? AND asset_id = ?)",
+                        (fid, node.lineno, node.end_lineno,
+                         node.name, a["id"], node.name, a["id"]))
         self.conn.commit()
 
     def _seed_flow_registry(self):

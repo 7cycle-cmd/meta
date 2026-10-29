@@ -109,8 +109,54 @@ CREATE TABLE IF NOT EXISTS step_registry (
 );
 """
 
+# asset_type：migration 資產類型字典（2026-10-29 用戶要求）
+# value = package / file（兩類資產）
+ASSET_TYPE_DDL = """
+CREATE TABLE IF NOT EXISTS asset_type (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    value       TEXT    NOT NULL UNIQUE,  -- package / file
+    description TEXT,
+    is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# asset：資產登記（2026-10-29 用戶要求）
+# id | asset_type_id | value
+#   asset_type_id -> asset_type.id（package=1 / file=2）
+#   value         = package 名 / 檔名
+ASSET_DDL = """
+CREATE TABLE IF NOT EXISTS asset (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_type_id INTEGER NOT NULL,        -- asset_type.id（package / file）
+    value        TEXT    NOT NULL,         -- package 名 / 檔名
+    is_active    INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
+# resource：migration 資源登記（2026-10-29 用戶要求）
+# id | type_id | start_line | end_line | name | asset_id
+#   type_id    -> structure.db resource_type.id（由 rest_api 攞，2026-10-29）
+#   start_line / end_line = AST 掃真實行號
+#   name       = resource 名（function / DDL 名）
+#   asset_id   -> asset.id（邊個 package / file）
+RESOURCE_DDL = """
+CREATE TABLE IF NOT EXISTS resource (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    type_id    INTEGER NOT NULL,           -- structure.db resource_type.id（rest_api 攞）
+    start_line INTEGER NOT NULL DEFAULT 0, -- AST 掃真實開始行號
+    end_line   INTEGER NOT NULL DEFAULT 0, -- AST 掃真實結束行號
+    name       TEXT    NOT NULL,           -- resource 名（function / DDL 名）
+    asset_id   INTEGER NOT NULL,           -- asset.id（邊個 package / file）
+    is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at TEXT    NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+"""
+
 __all__ = ["TYPE_DDL", "MIGRATION_LOG_DDL", "FLOW_REGISTRY_DDL",
-           "STEP_REGISTRY_DDL", "SchemaSkill"]
+           "STEP_REGISTRY_DDL", "ASSET_TYPE_DDL", "ASSET_DDL",
+           "RESOURCE_DDL", "SchemaSkill"]
 
 
 class SchemaSkill:
